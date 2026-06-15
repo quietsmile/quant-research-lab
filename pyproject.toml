@@ -29,3 +29,6 @@ include = ["quantlab*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "network: 需要联网拉取真实行情的用例（CI 可用 -m 'not network' 跳过）",
+]

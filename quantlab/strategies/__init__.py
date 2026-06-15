@@ -4,5 +4,6 @@
 """
 from quantlab.strategies.base import Strategy
 from quantlab.strategies.ma_cross import MACrossStrategy
+from quantlab.strategies.buy_hold import BuyHoldStrategy
 
-__all__ = ["Strategy", "MACrossStrategy"]
+__all__ = ["Strategy", "MACrossStrategy", "BuyHoldStrategy"]

@@ -43,6 +43,15 @@ def test_flat_strategy_preserves_cash():
     assert len(res.trades) == 0
 
 
+def test_buy_hold_stays_invested():
+    from quantlab.strategies import BuyHoldStrategy
+    prices = _synthetic_prices("600519", "2020-01-01", "2021-12-31")
+    res = Backtester().run(prices, BuyHoldStrategy())
+    # 首日建仓后基本满仓持有：实际仓位应长期接近 1
+    assert res.positions.iloc[-1] > 0.9
+    assert res.trades.iloc[0]["side"] == "buy"
+
+
 def test_full_strategy_only_trades_once_in_flat_market():
     # 价格不动：买入一次后就一直满仓，不应反复交易
     prices = _flat_market()

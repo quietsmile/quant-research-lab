@@ -95,6 +95,76 @@ def _akshare_prices(symbol: str, start: str, end: str) -> pd.DataFrame:
     return df
 
 
+def _to_yahoo_symbol(symbol: str) -> str:
+    """A 股代码 → Yahoo Finance 代码。
+
+    沪市（6 开头、9 开头 B 股）→ .SS；深市（0/2/3 开头）→ .SZ。
+    已含后缀（.SS/.SZ/.HK 等）则原样返回。
+    """
+    s = symbol.upper()
+    if "." in s:
+        return s
+    if s[0] in ("6", "9"):
+        return f"{s}.SS"
+    if s[0] in ("0", "2", "3"):
+        return f"{s}.SZ"
+    return s  # 其他（美股等）原样
+
+
+def _yahoo_prices(symbol: str, start: str, end: str) -> pd.DataFrame:
+    """通过 Yahoo Finance chart API 拉取**真实**日线行情（仅标准库，无需额外依赖）。
+
+    Yahoo 提供后复权 adjclose，这里按 adjclose/close 比例把 OHLC 一并复权，
+    得到适合回测的连续价格序列。
+    """
+    import json
+    import urllib.request
+
+    ysym = _to_yahoo_symbol(symbol)
+    p1 = int(pd.Timestamp(start).timestamp())
+    # 含 end 当日：加一天
+    p2 = int((pd.Timestamp(end) + pd.Timedelta(days=1)).timestamp())
+    url = (
+        f"https://query1.finance.yahoo.com/v8/finance/chart/{ysym}"
+        f"?period1={p1}&period2={p2}&interval=1d"
+    )
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
+
+    chart = payload.get("chart", {})
+    if chart.get("error") or not chart.get("result"):
+        raise ValueError(f"Yahoo 未返回数据: {ysym} ({chart.get('error')})")
+
+    result = chart["result"][0]
+    ts = result.get("timestamp")
+    if not ts:
+        raise ValueError(f"Yahoo 返回空行情: {ysym}")
+    quote = result["indicators"]["quote"][0]
+    adj = result["indicators"].get("adjclose", [{}])[0].get("adjclose")
+
+    df = pd.DataFrame(
+        {
+            "open": quote["open"],
+            "high": quote["high"],
+            "low": quote["low"],
+            "close": quote["close"],
+            "volume": quote["volume"],
+        },
+        index=pd.to_datetime(ts, unit="s").normalize(),
+    )
+    df.index.name = "date"
+    df = df.dropna(subset=["close"])
+
+    # 复权：用 adjclose/close 比例缩放 OHLC，保持序列连续
+    if adj is not None:
+        factor = (pd.Series(adj, index=df.index) / df["close"]).fillna(1.0)
+        for col in ("open", "high", "low", "close"):
+            df[col] = df[col] * factor
+
+    return df.astype(float)
+
+
 def load_prices(
     symbol: str,
     start: str = "2018-01-01",
@@ -112,8 +182,8 @@ def load_prices(
         标的代码，如 "600519"。
     start, end : str
         起止日期 "YYYY-MM-DD"。
-    source : {"auto", "akshare", "synthetic"}
-        "auto"：优先 AKShare，失败回落合成行情。
+    source : {"auto", "akshare", "yahoo", "synthetic"}
+        "auto"：依次尝试 AKShare → Yahoo Finance → 合成行情。
     use_cache : bool
         是否读写本地 CSV 缓存。
     clean : bool
@@ -124,7 +194,7 @@ def load_prices(
     DataFrame
         DatetimeIndex 索引的 OHLCV，已清洗（除非 clean=False）。
     """
-    if source not in {"auto", "akshare", "synthetic"}:
+    if source not in {"auto", "akshare", "yahoo", "synthetic"}:
         raise ValueError(f"未知 source: {source}")
 
     cache_file = _cache_path(symbol, start, end, source)
@@ -137,11 +207,17 @@ def load_prices(
         df = _synthetic_prices(symbol, start, end)
     elif source == "akshare":
         df = _akshare_prices(symbol, start, end)
-    else:  # auto
-        try:
-            df = _akshare_prices(symbol, start, end)
-        except Exception:
-            # 未装 akshare / 无网络 / 接口变动 —— 一律回落合成行情，保证可学习
+    elif source == "yahoo":
+        df = _yahoo_prices(symbol, start, end)
+    else:  # auto：真实源优先，逐个回落，最后合成保证可学习
+        for fetch in (_akshare_prices, _yahoo_prices):
+            try:
+                df = fetch(symbol, start, end)
+                break
+            except Exception:
+                continue
+        else:
+            # 所有真实源都不可用（无网/被墙/接口变动）→ 合成行情兜底
             df = _synthetic_prices(symbol, start, end)
 
     if clean:

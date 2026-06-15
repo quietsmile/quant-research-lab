@@ -4,7 +4,24 @@ import pandas as pd
 import pytest
 
 from quantlab.data import clean_prices
-from quantlab.data.loader import _synthetic_prices, load_prices
+from quantlab.data.loader import _synthetic_prices, load_prices, _to_yahoo_symbol, _yahoo_prices
+
+
+def test_yahoo_symbol_mapping():
+    assert _to_yahoo_symbol("600519") == "600519.SS"   # 沪市
+    assert _to_yahoo_symbol("000001") == "000001.SZ"   # 深市主板
+    assert _to_yahoo_symbol("300750") == "300750.SZ"   # 创业板
+    assert _to_yahoo_symbol("AAPL") == "AAPL"          # 美股原样
+    assert _to_yahoo_symbol("600519.SS") == "600519.SS"  # 已含后缀
+
+
+@pytest.mark.network
+def test_yahoo_real_fetch():
+    """联网时验证真实数据流（无网络则该用例可被 -m 'not network' 跳过）。"""
+    df = _yahoo_prices("600519", "2023-01-01", "2023-03-31")
+    assert len(df) > 30
+    assert (df[["open", "high", "low", "close"]] > 0).all().all()
+    assert df["close"].between(800, 3000).all()  # 茅台合理价区间
 
 
 def test_synthetic_is_reproducible():

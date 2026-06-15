@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# venv
+.venv/
+venv/
+env/
+
+# 数据缓存
+.cache/
+data_cache/
+*.csv.gz
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

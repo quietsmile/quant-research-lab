@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quant-research-lab"
+version = "0.1.0"
+description = "A discipline-first quant research framework for A-shares (anti-overfitting, real costs, out-of-sample validation)."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Quant Research Lab" }]
+keywords = ["quant", "backtest", "a-share", "finance", "overfitting"]
+dependencies = [
+    "pandas>=1.3",
+    "numpy>=1.20",
+]
+
+[project.optional-dependencies]
+data = ["akshare>=1.10"]
+viz = ["matplotlib>=3.4"]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+quantlab-demo = "examples.toy_strategy:main"
+
+[tool.setuptools.packages.find]
+include = ["quantlab*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

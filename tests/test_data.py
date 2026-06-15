@@ -8,9 +8,13 @@ from quantlab.data.loader import _synthetic_prices, load_prices, _to_yahoo_symbo
 
 
 def test_yahoo_symbol_mapping():
-    assert _to_yahoo_symbol("600519") == "600519.SS"   # 沪市
+    assert _to_yahoo_symbol("600519") == "600519.SS"   # 沪市主板
+    assert _to_yahoo_symbol("688981") == "688981.SS"   # 科创板
+    assert _to_yahoo_symbol("900957") == "900957.SS"   # 沪市 B 股
     assert _to_yahoo_symbol("000001") == "000001.SZ"   # 深市主板
     assert _to_yahoo_symbol("300750") == "300750.SZ"   # 创业板
+    assert _to_yahoo_symbol("830799") == "830799.BJ"   # 北交所 8 开头
+    assert _to_yahoo_symbol("920002") == "920002.BJ"   # 北交所 920 开头
     assert _to_yahoo_symbol("AAPL") == "AAPL"          # 美股原样
     assert _to_yahoo_symbol("600519.SS") == "600519.SS"  # 已含后缀
 

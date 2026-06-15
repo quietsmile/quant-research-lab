@@ -98,17 +98,24 @@ def _akshare_prices(symbol: str, start: str, end: str) -> pd.DataFrame:
 def _to_yahoo_symbol(symbol: str) -> str:
     """A 股代码 → Yahoo Finance 代码。
 
-    沪市（6 开头、9 开头 B 股）→ .SS；深市（0/2/3 开头）→ .SZ。
-    已含后缀（.SS/.SZ/.HK 等）则原样返回。
+    - 北交所（920 开头、4/8 开头）→ .BJ（注意：Yahoo 实际不收录北交所，
+      会触发"无数据"错误，请改用 AKShare）。
+    - 沪市（6 开头、900 B 股）→ .SS
+    - 深市（0/2/3 开头）→ .SZ
+    - 已含后缀（.SS/.SZ/.HK 等）原样返回；其他（美股等）原样返回。
     """
     s = symbol.upper()
     if "." in s:
         return s
-    if s[0] in ("6", "9"):
-        return f"{s}.SS"
+    if s.startswith("920") or s[0] in ("4", "8"):
+        return f"{s}.BJ"      # 北交所
+    if s[0] == "6" or s.startswith("900"):
+        return f"{s}.SS"      # 沪市（含科创板 688、B 股 900）
     if s[0] in ("0", "2", "3"):
-        return f"{s}.SZ"
-    return s  # 其他（美股等）原样
+        return f"{s}.SZ"      # 深市（主板/中小 00、创业板 30、B 股 200）
+    if s[0] == "9":
+        return f"{s}.SS"      # 其余 9 开头按沪市处理
+    return s                  # 美股等原样
 
 
 def _yahoo_prices(symbol: str, start: str, end: str) -> pd.DataFrame:
@@ -200,9 +207,13 @@ def load_prices(
     cache_file = _cache_path(symbol, start, end, source)
     if use_cache and cache_file.exists():
         df = pd.read_csv(cache_file, index_col=0, parse_dates=True)
-        return clean_prices(df) if clean else df
+        out = clean_prices(df) if clean else df
+        out.attrs["source"] = f"{source}(cached)"
+        out.attrs["is_real"] = source != "synthetic"
+        return out
 
     df: pd.DataFrame
+    used = source
     if source == "synthetic":
         df = _synthetic_prices(symbol, start, end)
     elif source == "akshare":
@@ -210,18 +221,24 @@ def load_prices(
     elif source == "yahoo":
         df = _yahoo_prices(symbol, start, end)
     else:  # auto：真实源优先，逐个回落，最后合成保证可学习
-        for fetch in (_akshare_prices, _yahoo_prices):
+        for name, fetch in (("akshare", _akshare_prices), ("yahoo", _yahoo_prices)):
             try:
                 df = fetch(symbol, start, end)
+                used = name
                 break
             except Exception:
                 continue
         else:
             # 所有真实源都不可用（无网/被墙/接口变动）→ 合成行情兜底
             df = _synthetic_prices(symbol, start, end)
+            used = "synthetic"
 
     if clean:
         df = clean_prices(df)
+
+    # 记录实际数据来源，便于一眼分清"真实行情 vs 合成兜底"
+    df.attrs["source"] = used
+    df.attrs["is_real"] = used != "synthetic"
 
     if use_cache:
         _CACHE_DIR.mkdir(parents=True, exist_ok=True)

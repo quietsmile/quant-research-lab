@@ -42,9 +42,10 @@ def main() -> None:
 
     # 1) 真实数据（Yahoo 优先；不可用时框架自动回落，见 load_prices）
     prices = load_prices(symbol, start, end, source="auto")
-    src = "真实行情" if len(prices) > 0 else "?"
+    src = prices.attrs.get("source", "?")
+    tag = "真实行情" if prices.attrs.get("is_real") else "⚠ 合成兜底(非真实)"
     print(f"[数据] {symbol}  {prices.index[0].date()} ~ {prices.index[-1].date()}  "
-          f"({len(prices)} 交易日)  来源={src}")
+          f"({len(prices)} 交易日)  来源={src} [{tag}]")
     print(f"       期初收盘 {prices['close'].iloc[0]:.1f} → 期末 {prices['close'].iloc[-1]:.1f}\n")
 
     costs = AShareCostModel()

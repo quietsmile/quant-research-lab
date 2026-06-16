@@ -10,7 +10,10 @@
   一眼看清数据质量。
 
 跑法：
-    python examples/build_dataset.py [开始] [结束] [间隔秒]
+    python examples/build_dataset.py [开始] [结束] [间隔秒] [数据源]
+
+数据源默认 auto（AKShare→Yahoo→合成）。在 AKShare 数据源被墙的环境里，
+auto 会在每只上先等 AKShare 超时再回落，很慢；此时可显式传 yahoo 直连。
 """
 from __future__ import annotations
 
@@ -44,12 +47,13 @@ def main() -> None:
     start = sys.argv[1] if len(sys.argv) > 1 else "2015-01-01"
     end = sys.argv[2] if len(sys.argv) > 2 else "2024-12-31"
     delay = float(sys.argv[3]) if len(sys.argv) > 3 else 1.2
+    source = sys.argv[4] if len(sys.argv) > 4 else "auto"
 
     rows = []
     n = len(LIQUID_LEADERS)
     for i, (code, name) in enumerate(LIQUID_LEADERS.items(), 1):
         try:
-            df = load_prices(code, start, end, source="auto")
+            df = load_prices(code, start, end, source=source)
             q = _quality(df)
             real = bool(df.attrs.get("is_real"))
             rows.append({"code": code, "name": name, "source": df.attrs.get("source"),

@@ -26,9 +26,30 @@ pip install -e ".[viz]"     # 可选：matplotlib 画图
 python examples/toy_strategy.py            # 合成行情，离线可跑，演示完整方法论
 python examples/real_data_backtest.py      # 真实行情：趋势跟踪 vs 买入持有，并讲清"为什么有用"
 python examples/compare_strategies.py      # 趋势 vs 突破 vs 均值回归 vs 买入持有 横向对比
+python examples/universe_backtest.py ma    # 多标的全池回测：跨标的稳健性（防过拟合真功夫）
 python examples/check_symbol.py 600519     # 自检某代码能否拿到真实行情
-python examples/build_dataset.py           # 数据储备：把一批高流动性 A 股真实日线落到本地 + 质量报告
+python examples/build_dataset.py 2015-01-01 2024-12-31 1.0 yahoo   # 数据储备 + 质量报告
+python examples/sync_offline.py 2015-01-01 2024-12-31 1.0 yahoo    # 增量同步到离线 parquet 数据仓
+streamlit run dashboard/app.py             # Web 看板（需 pip install -e ".[dashboard]"）
 ```
+
+### Web 看板（Streamlit + Plotly）
+
+```bash
+pip install -e ".[dashboard]"
+streamlit run dashboard/app.py
+```
+左侧选标的/策略/参数，右侧顶部指标卡 + 净值/回撤/仓位/成交点多图，浏览器打开、布局紧凑。逻辑全在 `dashboard/core.py`（纯函数、可单测），UI 层 `dashboard/app.py` 很薄——要加指标监控只在 core 加图函数即可。
+
+### 离线数据仓
+
+```python
+from quantlab.data import load_prices, list_offline
+# 先 sync_offline 把真实行情增量累积成 parquet（断网可用、长期累积）
+prices = load_prices("600519", "2018-01-01", "2023-12-31", source="offline")
+print(list_offline())   # 离线仓清单：每只的覆盖区间/天数
+```
+离线仓默认在 `~/.local/share/quantlab/offline`（可用环境变量 `QUANTLAB_OFFLINE` 改）。`sync_offline` 可反复跑、逐步拉长区间，数据按日期去重累积——慢慢攒成项目的"高质量数据总量"。
 
 内置策略（`quantlab.strategies`）：`MACrossStrategy`（均线趋势）、`DonchianBreakoutStrategy`（通道突破）、`BollingerReversionStrategy`（均值回归）、`BuyHoldStrategy`（基准）。它们刻意覆盖**趋势**与**反转**两类逻辑——演示"没有万能策略，只有匹配市场状态的策略"。
 

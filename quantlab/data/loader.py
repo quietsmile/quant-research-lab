@@ -201,8 +201,17 @@ def load_prices(
     DataFrame
         DatetimeIndex 索引的 OHLCV，已清洗（除非 clean=False）。
     """
-    if source not in {"auto", "akshare", "yahoo", "synthetic"}:
+    if source not in {"auto", "akshare", "yahoo", "synthetic", "offline"}:
         raise ValueError(f"未知 source: {source}")
+
+    # 离线源：直接读 parquet 数据仓，断网可用
+    if source == "offline":
+        from quantlab.data.offline import load_offline
+        df = load_offline(symbol, start, end)
+        out = clean_prices(df) if clean else df
+        out.attrs["source"] = "offline"
+        out.attrs["is_real"] = True
+        return out
 
     cache_file = _cache_path(symbol, start, end, source)
     if use_cache and cache_file.exists():

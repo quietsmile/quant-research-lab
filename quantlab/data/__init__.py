@@ -7,5 +7,11 @@
 """
 from quantlab.data.loader import load_prices, clear_cache
 from quantlab.data.clean import clean_prices
+from quantlab.data.offline import (
+    load_offline, update_offline, list_offline, has_offline, OFFLINE_DIR,
+)
 
-__all__ = ["load_prices", "clear_cache", "clean_prices"]
+__all__ = [
+    "load_prices", "clear_cache", "clean_prices",
+    "load_offline", "update_offline", "list_offline", "has_offline", "OFFLINE_DIR",
+]

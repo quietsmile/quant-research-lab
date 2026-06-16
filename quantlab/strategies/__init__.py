@@ -5,5 +5,13 @@
 from quantlab.strategies.base import Strategy
 from quantlab.strategies.ma_cross import MACrossStrategy
 from quantlab.strategies.buy_hold import BuyHoldStrategy
+from quantlab.strategies.donchian import DonchianBreakoutStrategy
+from quantlab.strategies.bollinger import BollingerReversionStrategy
 
-__all__ = ["Strategy", "MACrossStrategy", "BuyHoldStrategy"]
+__all__ = [
+    "Strategy",
+    "MACrossStrategy",
+    "BuyHoldStrategy",
+    "DonchianBreakoutStrategy",
+    "BollingerReversionStrategy",
+]

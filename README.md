@@ -25,7 +25,12 @@ pip install -e ".[viz]"     # 可选：matplotlib 画图
 ```bash
 python examples/toy_strategy.py            # 合成行情，离线可跑，演示完整方法论
 python examples/real_data_backtest.py      # 真实行情：趋势跟踪 vs 买入持有，并讲清"为什么有用"
+python examples/compare_strategies.py      # 趋势 vs 突破 vs 均值回归 vs 买入持有 横向对比
+python examples/check_symbol.py 600519     # 自检某代码能否拿到真实行情
+python examples/build_dataset.py           # 数据储备：把一批高流动性 A 股真实日线落到本地 + 质量报告
 ```
+
+内置策略（`quantlab.strategies`）：`MACrossStrategy`（均线趋势）、`DonchianBreakoutStrategy`（通道突破）、`BollingerReversionStrategy`（均值回归）、`BuyHoldStrategy`（基准）。它们刻意覆盖**趋势**与**反转**两类逻辑——演示"没有万能策略，只有匹配市场状态的策略"。
 
 它会完成一条完整链路：**数据 → 清洗 → 信号 → 带真实成本的回测 → 样本外验证**，并打印一份诚实的体检报告，包括"为什么这个结果可能是过拟合"。
 

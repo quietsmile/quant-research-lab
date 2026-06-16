@@ -13,10 +13,11 @@ dist/
 venv/
 env/
 
-# 数据缓存
+# 数据缓存与生成的报告
 .cache/
 data_cache/
 *.csv.gz
+data_manifest.csv
 
 # OS / editor
 .DS_Store

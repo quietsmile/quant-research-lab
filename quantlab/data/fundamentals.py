@@ -43,6 +43,22 @@ _COLMAP = {
 _CNINFO_CATEGORIES = ["年报", "半年报", "一季报", "三季报"]
 
 
+# A 股代码前缀（沪深主板/科创/创业 + 北交所），用于从 yjbb 全集中剔除新三板等
+_A_PREFIX2 = {"60", "68", "00", "30", "83", "87", "88", "92"}
+
+
+def is_a_share(symbol: str) -> bool:
+    """是否为沪深京 A 股代码（粗筛，排除新三板等）。"""
+    s = str(symbol).zfill(6)
+    return s[:2] in _A_PREFIX2 or s[:3] in {"920", "430"}
+
+
+def a_share_symbols_from_store() -> list[str]:
+    """从已下载的财务库取全部 A 股代码（供公告日批量抓取用）。"""
+    perf = load_performance()
+    return sorted(s for s in perf["symbol"].unique() if is_a_share(s))
+
+
 def quarter_ends(start_year: int, end_year: int) -> list[str]:
     """生成 [start_year, end_year] 的季度末日期 YYYYMMDD。"""
     return [f"{y}{mmdd}" for y in range(start_year, end_year + 1)

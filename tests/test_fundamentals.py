@@ -80,6 +80,7 @@ def test_parse_period():
     assert fund._parse_period("2023年第一季度报告") == pd.Timestamp("2023-03-31")
     assert fund._parse_period("2023年第三季度报告") == pd.Timestamp("2023-09-30")
     assert fund._parse_period("关于召开股东大会的通知") is None
+    assert fund._parse_period("0201年年度报告") is None   # 离谱年份护栏，防越界日期
 
 
 def test_quarter_ends():

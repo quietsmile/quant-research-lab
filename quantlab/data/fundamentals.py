@@ -97,15 +97,21 @@ def download_performance(periods, *, save=True, sleep=0.5, verbose=True) -> pd.D
 
     frames = []
     for i, p in enumerate(periods, 1):
-        try:
-            raw = ak.stock_yjbb_em(date=p)
-            if raw is not None and len(raw):
-                frames.append(_normalize_perf(raw, p))
-                if verbose:
-                    print(f"[数字 {i}/{len(periods)}] {p}: {len(raw)} 行 ✅", flush=True)
-        except Exception as e:  # noqa: BLE001
+        raw = None
+        for attempt in range(3):  # 重试，容忍 ChunkedEncodingError 等瞬时网络错误
+            try:
+                raw = ak.stock_yjbb_em(date=p)
+                if raw is not None and len(raw):
+                    break
+            except Exception as e:  # noqa: BLE001
+                last_err = e
+                time.sleep(1.5 * (attempt + 1))
+        if raw is not None and len(raw):
+            frames.append(_normalize_perf(raw, p))
             if verbose:
-                print(f"[数字 {i}/{len(periods)}] {p}: ❌ {type(e).__name__}: {str(e)[:50]}", flush=True)
+                print(f"[数字 {i}/{len(periods)}] {p}: {len(raw)} 行 ✅", flush=True)
+        elif verbose:
+            print(f"[数字 {i}/{len(periods)}] {p}: ❌ 重试3次仍失败", flush=True)
         if i < len(periods):
             time.sleep(sleep)
 
@@ -125,6 +131,8 @@ def _parse_period(title: str) -> pd.Timestamp | None:
     if not m:
         return None
     y = int(m.group(1))
+    if y < 1990 or y > 2100:   # 护栏：剔除异常标题解析出的离谱年份，避免越界日期
+        return None
     # 注意顺序：「半年度报告」含「年度报告」子串，必须先判半年报
     if "半年度报告" in title or "中期报告" in title:
         return pd.Timestamp(y, 6, 30)

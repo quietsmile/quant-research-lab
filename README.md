@@ -41,6 +41,30 @@ streamlit run dashboard/app.py
 ```
 左侧选标的/策略/参数，右侧顶部指标卡 + 净值/回撤/仓位/成交点多图，浏览器打开、布局紧凑。逻辑全在 `dashboard/core.py`（纯函数、可单测），UI 层 `dashboard/app.py` 很薄——要加指标监控只在 core 加图函数即可。
 
+### 财务数据（point-in-time / 按公告日，防前视）
+
+财报回测最大的坑是前视偏差：一季报报告期 3/31，但往往 4 月底才公告。本框架对每条财报都按**真实公告日**对齐，查询只返回"截至某日已公告"的数据。
+
+```python
+from quantlab.data import point_in_time
+# 只返回截至该日已公告的、每只股票最新一期财报——绝不前视
+snap = point_in_time("2024-06-15", symbols=["600519", "000858"])
+print(snap[["symbol", "report_period", "announce_date", "announce_is_real", "net_profit", "roe"]])
+```
+
+数据源分工（均实测可用，与被墙的行情接口不同源）：
+- **财务数字**：东财 `stock_yjbb_em(季度)`——一次调用覆盖全市场所有公司。
+- **公告日**：巨潮 cninfo 定期报告**首发公告时间**（权威 PIT 基准）。
+- **兜底**：cninfo 缺失时用**法定披露截止日**（年报/Q1≤4-30、半年报≤8-31、Q3≤10-31），保守、绝不前视。
+
+```bash
+python examples/download_fundamentals.py 2015 2024        # 财务数字（全公司，按季度）
+python examples/download_announce_dates.py 20150101 20251231 0.2 all   # 全A股真实公告日
+python examples/build_fundamentals_full.py 2015 2024      # 一键回补：数字 + 公告日 + PIT
+```
+
+> ⚠ 注意：`stock_yjbb_em` 自带的「最新公告日期」是该公司**最近一次披露日**、不是本期报告首发日，用于 PIT 会前视——本框架已弃用，改由 cninfo 取真实首发日。
+
 ### 离线数据仓
 
 ```python

@@ -10,8 +10,13 @@ from quantlab.data.clean import clean_prices
 from quantlab.data.offline import (
     load_offline, update_offline, list_offline, has_offline, OFFLINE_DIR,
 )
+from quantlab.data.fundamentals import (
+    point_in_time, build_pit_table, load_performance, statutory_deadline,
+)
 
 __all__ = [
     "load_prices", "clear_cache", "clean_prices",
     "load_offline", "update_offline", "list_offline", "has_offline", "OFFLINE_DIR",
+    # 财务数据（point-in-time / 按公告日，防前视）
+    "point_in_time", "build_pit_table", "load_performance", "statutory_deadline",
 ]

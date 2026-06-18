@@ -52,13 +52,21 @@ def point_in_time(as_of, symbols=None, *, source: str = "auto",
         stale = (as_of - snap["report_period"]).dt.days > max_stale_days
         snap = snap[~stale]
 
-    # ③ list_date 门控（仅当有 listing 缓存）
+    # ③ list_date / delist_date 门控（仅当有 listing 缓存）
+    #   纳入退市股在其上市期间的数据(消除幸存者偏差)，但 as_of 早于上市日 / 晚于
+    #   退市日的不纳入(尚未上市 / 已退市不可投)。
     if list_gate:
         try:
-            listing = tushare_adapter.load_listing()[["symbol", "list_date"]]
-            snap = snap.merge(listing, on="symbol", how="left")
+            cols = ["symbol", "list_date"]
+            listing = tushare_adapter.load_listing()
+            has_delist = "delist_date" in listing.columns
+            if has_delist:
+                cols.append("delist_date")
+            snap = snap.merge(listing[cols], on="symbol", how="left")
             keep = snap["list_date"].isna() | (as_of >= snap["list_date"])
-            snap = snap[keep].drop(columns=["list_date"])
+            if has_delist:
+                keep &= snap["delist_date"].isna() | (as_of < snap["delist_date"])
+            snap = snap[keep].drop(columns=[c for c in ("list_date", "delist_date") if c in snap.columns])
         except FileNotFoundError:
             pass  # 无上市日缓存则跳过门控
 

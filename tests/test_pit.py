@@ -44,3 +44,26 @@ def test_list_date_gate(monkeypatch):
     # as_of 晚于上市日 → 都保留
     res2 = pit.point_in_time("2021-03-31", source="tushare", max_stale_days=None, list_gate=True)
     assert set(res2["symbol"]) == {"600519", "688981"}
+
+
+def test_delist_date_gate(monkeypatch):
+    """退市股在退市后不应被纳入(但退市前在其上市期间应纳入)。"""
+    snap = _snap([
+        {"symbol": "600519", "report_period": pd.Timestamp("2023-12-31"),
+         "announce_date": pd.Timestamp("2024-03-31"), "roe": 30.0},
+        {"symbol": "000003", "report_period": pd.Timestamp("2023-12-31"),
+         "announce_date": pd.Timestamp("2024-03-31"), "roe": 1.0},  # 已退市
+    ])
+    listing = pd.DataFrame({
+        "symbol": ["600519", "000003"],
+        "list_date": [pd.Timestamp("2001-08-27"), pd.Timestamp("1991-01-01")],
+        "delist_date": [pd.NaT, pd.Timestamp("2024-04-26")],
+    })
+    monkeypatch.setattr(tsa, "point_in_time", lambda a, s=None: snap)
+    monkeypatch.setattr(tsa, "load_listing", lambda: listing)
+    # 退市日(2024-04-26)之后查询 → 000003 被排除
+    res = pit.point_in_time("2024-06-01", source="tushare", max_stale_days=None, list_gate=True)
+    assert set(res["symbol"]) == {"600519"}
+    # 退市日之前查询 → 仍纳入(避免幸存者偏差)
+    res2 = pit.point_in_time("2024-04-01", source="tushare", max_stale_days=None, list_gate=True)
+    assert "000003" in set(res2["symbol"])

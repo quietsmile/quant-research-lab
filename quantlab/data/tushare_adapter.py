@@ -16,9 +16,11 @@ from pathlib import Path
 
 import pandas as pd
 
-TS_FUND_FILE = Path(os.environ.get(
+_FUND_DIR = Path(os.environ.get(
     "QUANTLAB_FUND", Path.home() / ".local" / "share" / "quantlab" / "fundamentals"
-)) / "tushare_pit.parquet"
+))
+TS_FUND_FILE = _FUND_DIR / "tushare_pit.parquet"
+LISTING_FILE = _FUND_DIR / "listing.parquet"   # 上市日（list_date 门控用）
 
 _TOKEN_FILE = Path.home() / ".tushare_token"
 _pro_cached = None
@@ -153,6 +155,27 @@ def load_pit() -> pd.DataFrame:
     df = pd.read_parquet(TS_FUND_FILE)
     for c in ("report_period", "announce_date"):
         df[c] = pd.to_datetime(df[c], errors="coerce")
+    return df
+
+
+def download_listing(*, save: bool = True) -> pd.DataFrame:
+    """拉全 A 股上市日（stock_basic），缓存为 listing.parquet（list_date 门控用）。"""
+    pro = get_pro()
+    df = pro.stock_basic(exchange="", list_status="L",
+                         fields="symbol,name,market,list_date,delist_date")
+    df["symbol"] = df["symbol"].astype(str).str.zfill(6)
+    df["list_date"] = pd.to_datetime(df["list_date"], format="%Y%m%d", errors="coerce")
+    if save:
+        LISTING_FILE.parent.mkdir(parents=True, exist_ok=True)
+        df.to_parquet(LISTING_FILE, index=False)
+    return df
+
+
+def load_listing() -> pd.DataFrame:
+    if not LISTING_FILE.exists():
+        raise FileNotFoundError(f"上市日库不存在：{LISTING_FILE}（先运行 download_listing）")
+    df = pd.read_parquet(LISTING_FILE)
+    df["list_date"] = pd.to_datetime(df["list_date"], errors="coerce")
     return df
 
 

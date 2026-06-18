@@ -255,6 +255,21 @@ def load_market_panel() -> pd.DataFrame:
     return df
 
 
+DAILY_FILE = _FUND_DIR / "daily_prices.parquet"
+
+
+def load_daily_prices() -> pd.DataFrame:
+    """全市场**日频**后复权收盘价长表（trade_date, symbol, adj_close）。
+
+    由 examples/pull_daily_prices.py 构建；支持日频/任意频率回测。
+    """
+    if not DAILY_FILE.exists():
+        raise FileNotFoundError(f"日频价格库不存在：{DAILY_FILE}（先运行 examples/pull_daily_prices.py）")
+    df = pd.read_parquet(DAILY_FILE)
+    df["trade_date"] = pd.to_datetime(df["trade_date"])
+    return df
+
+
 def build_features(df: pd.DataFrame | None = None, *, save: bool = True) -> pd.DataFrame:
     """对 Tushare PIT 表做累计→单季 + TTM + 单季同比（口径一致、跨期可比）。
 

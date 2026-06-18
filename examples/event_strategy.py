@@ -26,13 +26,17 @@ from quantlab import eval as ev
 COST = 0.003   # 双边成本
 
 
-def run(growth_thr=0.20, breakout=0.08):
+def run(value_ratio=1.5, breakout=0.08, fair_pe=15.0):
     px = load_daily_prices().pivot_table(index="trade_date", columns="symbol",
                                          values="adj_close").sort_index()
     dates = px.index
     pos = {d: i for i, d in enumerate(dates)}
     cum3 = px / px.shift(3) - 1.0                       # 3 日累计收益
     mktidx = (1 + px.pct_change(fill_method=None).mean(axis=1)).cumprod()   # 等权市场指数
+
+    # 季度末市值(万元)→ 每股按公告日 asof 取最近一期
+    from quantlab.data.tushare_adapter import load_market_panel
+    mvq = load_market_panel().pivot_table(index="trade_date", columns="symbol", values="total_mv").sort_index()
 
     feat = pd.read_parquet(TS_FEATURES_FILE)
     feat["announce_date"] = pd.to_datetime(feat["announce_date"])
@@ -43,11 +47,19 @@ def run(growth_thr=0.20, breakout=0.08):
         if sym not in px.columns:
             continue
         s = px[sym]; c3 = cum3[sym]
-        recs = g[["announce_date", "roe", "net_profit_q_yoy"]].values
+        mv_s = mvq[sym].dropna() if sym in mvq.columns else pd.Series(dtype=float)
+        recs = g[["announce_date", "roe", "net_profit_q_yoy", "net_profit_ttm"]].values
         for k in range(len(recs) - 1):
-            a0, roe, yoy = recs[k]
+            a0, roe, yoy, ttm = recs[k]
             a1 = recs[k + 1][0]
-            good = (roe is not None and roe > 0) and (yoy is not None and not np.isnan(yoy) and yoy > growth_thr)
+            # 隐含价值 = TTM归母净利 × 合理PE × (1+增长) ；与当前市值(万元→元)比
+            mv_at = mv_s.loc[:a0]
+            mcap = mv_at.iloc[-1] * 1e4 if len(mv_at) else np.nan
+            # "对未来的预期"：用增长把盈利向前外推 2 年(g 截断在[0,1])，再×合理PE
+            g = min(max(yoy, 0.0), 1.0) if (yoy is not None and not np.isnan(yoy)) else 0.0
+            implied = ttm * fair_pe * (1 + g) ** 2 if (ttm is not None and not np.isnan(ttm)) else np.nan
+            good = ((roe is not None and roe > 0) and (ttm is not None and ttm > 0)
+                    and not np.isnan(mcap) and mcap > 0 and (implied / mcap) > value_ratio)
             # 周期内交易日 (a0, a1)
             win = dates[(dates > a0) & (dates < a1)]
             if len(win) < 4:
@@ -97,10 +109,12 @@ def summarize(df, label):
 
 
 def main():
-    gthr = float(sys.argv[1]) if len(sys.argv) > 1 else 0.20
+    vr = float(sys.argv[1]) if len(sys.argv) > 1 else 1.5
     bk = float(sys.argv[2]) if len(sys.argv) > 2 else 0.08
-    print(f"事件策略：好财报(ROE>0 & 单季同比>{gthr:.0%}) + 3日涨≥{bk:.0%} → 持有到下次财报前\n")
-    tr = run(gthr, bk)
+    pe = float(sys.argv[3]) if len(sys.argv) > 3 else 15.0
+    print(f"事件策略：隐含价值(TTM净利×{pe:.0f}×(1+增长)) > 当前市值×{vr} 且 ROE>0  +  3日涨≥{bk:.0%}"
+          f" → 持有到下次财报前\n")
+    tr = run(vr, bk, pe)
 
     print("===== 全样本（每笔=一个财报周期的一次交易，超额=相对等权市场）=====")
     for k, lab in [("A_full", "A 完整(好财报+追涨)"), ("B_breakout", "B 仅追涨"),

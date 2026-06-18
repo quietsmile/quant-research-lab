@@ -33,10 +33,31 @@ def _token() -> str:
     raise RuntimeError("未配置 Tushare token（设 TUSHARE_TOKEN 或写入 ~/.tushare_token）")
 
 
+def _install_keepalive_session():
+    """把 tushare 客户端的 requests 换成**单连接 keep-alive Session**。
+
+    本环境是按连接分配出口 IP 的多出口 NAT；tushare 默认每次调用新建连接 →
+    出口 IP 轮换 → 触发"每 token 最多 N 个 IP"。改用复用单条长连接的 Session 后，
+    所有调用走同一出口 IP，只占用 1 个 IP 名额。
+    """
+    import requests
+    from requests.adapters import HTTPAdapter
+    import tushare.pro.client as cli
+
+    sess = requests.Session()
+    # 强制单连接池，最大化复用同一条 TCP 连接（即同一出口 IP）
+    adapter = HTTPAdapter(pool_connections=1, pool_maxsize=1, max_retries=2)
+    sess.mount("https://", adapter)
+    sess.mount("http://", adapter)
+    cli.requests = sess          # query() 内部 requests.post → sess.post
+    return sess
+
+
 def get_pro():
-    """惰性初始化 tushare pro 客户端（带 token）。"""
+    """惰性初始化 tushare pro 客户端（带 token + 单连接 Session 固定出口 IP）。"""
     global _pro_cached
     if _pro_cached is None:
+        _install_keepalive_session()
         import tushare as ts
         ts.set_token(_token())
         _pro_cached = ts.pro_api()

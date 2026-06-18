@@ -45,3 +45,21 @@ def neutralize(s: pd.Series, groups: pd.Series) -> pd.Series:
     """行业/分组中性化：减去每个分组的均值（去除分组系统性差异）。"""
     df = pd.DataFrame({"v": s, "g": groups})
     return df["v"] - df.groupby("g")["v"].transform("mean")
+
+
+def neutralize_industry_size(s: pd.Series, industry: pd.Series, log_size: pd.Series) -> pd.Series:
+    """行业 + 市值中性化：先按行业去均值，再对 log 市值做 OLS 取残差。
+
+    去掉因子里的行业暴露与规模暴露，留下更"纯"的 alpha。返回与 s 同索引的残差。
+    """
+    df = pd.DataFrame({"v": s, "ind": industry, "lsz": log_size}).dropna()
+    if len(df) < 10:
+        return s
+    # 行业去均值
+    v = df["v"] - df.groupby("ind")["v"].transform("mean")
+    # 对 log 市值回归取残差
+    x = df["lsz"].to_numpy()
+    if x.std() > 0:
+        beta, alpha = np.polyfit(x, v.to_numpy(), 1)
+        v = v - (alpha + beta * x)
+    return v.reindex(s.index)

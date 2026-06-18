@@ -173,7 +173,7 @@ def download_listing(*, save: bool = True) -> pd.DataFrame:
     for st in ("L", "D", "P"):
         try:
             d = pro.stock_basic(exchange="", list_status=st,
-                                fields="symbol,name,market,list_date,delist_date")
+                                fields="symbol,name,industry,market,list_date,delist_date")
             d["list_status"] = st
             frames.append(d)
         except Exception:  # noqa: BLE001

@@ -205,6 +205,56 @@ def load_listing() -> pd.DataFrame:
     return df
 
 
+MARKET_PANEL_FILE = _FUND_DIR / "market_panel.parquet"
+
+
+def quarter_end_panel(start_year: int, end_year: int, *, save: bool = True,
+                      sleep: float = 0.3, verbose: bool = True) -> pd.DataFrame:
+    """按季度末交易日拉全市场截面（一次调用一天，含退市股，无幸存者偏差）。
+
+    返回长表：trade_date, symbol, adj_close(后复权收盘), pe_ttm, pb, total_mv。
+    用于多因子分层回测的价格/估值面板。
+    """
+    import time
+    pro = get_pro()
+    # 各季度末交易日
+    cal = pro.trade_cal(exchange="SSE", start_date=f"{start_year}0101",
+                        end_date=f"{end_year}1231", is_open="1")
+    cal["d"] = pd.to_datetime(cal["cal_date"], format="%Y%m%d")
+    q_last = cal.groupby(cal["d"].dt.to_period("Q"))["cal_date"].max().tolist()
+
+    frames = []
+    for i, d in enumerate(q_last, 1):
+        try:
+            db = pro.daily_basic(trade_date=d, fields="ts_code,close,pe_ttm,pb,total_mv")
+            af = pro.adj_factor(trade_date=d, fields="ts_code,adj_factor")
+            m = db.merge(af, on="ts_code", how="left")
+            m["adj_close"] = m["close"] * m["adj_factor"].fillna(1.0)
+            m["trade_date"] = pd.to_datetime(d, format="%Y%m%d")
+            m["symbol"] = m["ts_code"].str[:6]
+            frames.append(m[["trade_date", "symbol", "adj_close", "pe_ttm", "pb", "total_mv"]])
+            if verbose:
+                print(f"[{i}/{len(q_last)}] {d}: {len(m)} 只 ✅", flush=True)
+        except Exception as e:  # noqa: BLE001
+            if verbose:
+                print(f"[{i}/{len(q_last)}] {d}: ❌ {str(e)[:40]}", flush=True)
+        time.sleep(sleep)
+
+    panel = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    if save and not panel.empty:
+        MARKET_PANEL_FILE.parent.mkdir(parents=True, exist_ok=True)
+        panel.to_parquet(MARKET_PANEL_FILE, index=False)
+    return panel
+
+
+def load_market_panel() -> pd.DataFrame:
+    if not MARKET_PANEL_FILE.exists():
+        raise FileNotFoundError(f"市场面板不存在：{MARKET_PANEL_FILE}")
+    df = pd.read_parquet(MARKET_PANEL_FILE)
+    df["trade_date"] = pd.to_datetime(df["trade_date"])
+    return df
+
+
 def build_features(df: pd.DataFrame | None = None, *, save: bool = True) -> pd.DataFrame:
     """对 Tushare PIT 表做累计→单季 + TTM + 单季同比（口径一致、跨期可比）。
 

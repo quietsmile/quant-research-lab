@@ -163,16 +163,38 @@ def load_pit() -> pd.DataFrame:
 
 
 def download_listing(*, save: bool = True) -> pd.DataFrame:
-    """拉全 A 股上市日（stock_basic），缓存为 listing.parquet（list_date 门控用）。"""
+    """拉全 A 股名录（含**退市/暂停**），缓存 listing.parquet。
+
+    关键：list_status 取 L(在市)+D(退市)+P(暂停)三类，**纳入已退市公司以避免
+    幸存者偏差**；带 list_date(门控)与 delist_date(退市日)。
+    """
     pro = get_pro()
-    df = pro.stock_basic(exchange="", list_status="L",
-                         fields="symbol,name,market,list_date,delist_date")
+    frames = []
+    for st in ("L", "D", "P"):
+        try:
+            d = pro.stock_basic(exchange="", list_status=st,
+                                fields="symbol,name,market,list_date,delist_date")
+            d["list_status"] = st
+            frames.append(d)
+        except Exception:  # noqa: BLE001
+            continue
+    df = pd.concat(frames, ignore_index=True)
     df["symbol"] = df["symbol"].astype(str).str.zfill(6)
     df["list_date"] = pd.to_datetime(df["list_date"], format="%Y%m%d", errors="coerce")
+    df["delist_date"] = pd.to_datetime(df.get("delist_date"), format="%Y%m%d", errors="coerce")
+    df = df.drop_duplicates("symbol")
     if save:
         LISTING_FILE.parent.mkdir(parents=True, exist_ok=True)
         df.to_parquet(LISTING_FILE, index=False)
     return df
+
+
+def all_symbols(include_delisted: bool = True) -> list[str]:
+    """全 A 股代码列表（默认含退市，避免幸存者偏差）。需先 download_listing。"""
+    df = load_listing()
+    if not include_delisted:
+        df = df[df["list_status"] == "L"]
+    return sorted(df["symbol"].tolist())
 
 
 def load_listing() -> pd.DataFrame:

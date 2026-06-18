@@ -27,9 +27,9 @@ def main() -> None:
     scope = sys.argv[4] if len(sys.argv) > 4 else "universe"
 
     if scope == "all":
-        pro = tsa.get_pro()
-        basic = pro.stock_basic(exchange="", list_status="L", fields="symbol")
-        symbols = sorted(basic["symbol"].tolist())
+        # 含退市股，避免幸存者偏差（需先 download_listing 建名录）
+        tsa.download_listing()
+        symbols = tsa.all_symbols(include_delisted=True)
     else:
         symbols = default_universe()
 

@@ -270,6 +270,22 @@ def load_daily_prices() -> pd.DataFrame:
     return df
 
 
+OHLCV_FILE = _FUND_DIR / "daily_ohlcv.parquet"
+
+
+def load_daily_ohlcv() -> pd.DataFrame:
+    """全市场日频 OHLCV + 成交额/换手率/量比长表，支持量价因子。
+
+    列：trade_date, symbol, adj_open/high/low/close, vol(手), amount(千元),
+    turnover_rate(%), volume_ratio。由 examples/pull_daily_ohlcv.py 构建。
+    """
+    if not OHLCV_FILE.exists():
+        raise FileNotFoundError(f"日频量价库不存在：{OHLCV_FILE}（先运行 examples/pull_daily_ohlcv.py）")
+    df = pd.read_parquet(OHLCV_FILE)
+    df["trade_date"] = pd.to_datetime(df["trade_date"])
+    return df
+
+
 def build_features(df: pd.DataFrame | None = None, *, save: bool = True) -> pd.DataFrame:
     """对 Tushare PIT 表做累计→单季 + TTM + 单季同比（口径一致、跨期可比）。
 

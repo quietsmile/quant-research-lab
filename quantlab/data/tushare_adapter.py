@@ -20,7 +20,11 @@ _FUND_DIR = Path(os.environ.get(
     "QUANTLAB_FUND", Path.home() / ".local" / "share" / "quantlab" / "fundamentals"
 ))
 TS_FUND_FILE = _FUND_DIR / "tushare_pit.parquet"
+TS_FEATURES_FILE = _FUND_DIR / "tushare_features.parquet"  # 含单季/TTM/同比
 LISTING_FILE = _FUND_DIR / "listing.parquet"   # 上市日（list_date 门控用）
+
+# Tushare PIT 表里的累计口径流量字段（需拆单季/TTM）
+TS_FLOW_FIELDS = ["net_profit", "net_profit_total", "revenue", "profit_dedt", "eps"]
 
 _TOKEN_FILE = Path.home() / ".tushare_token"
 _pro_cached = None
@@ -179,10 +183,35 @@ def load_listing() -> pd.DataFrame:
     return df
 
 
+def build_features(df: pd.DataFrame | None = None, *, save: bool = True) -> pd.DataFrame:
+    """对 Tushare PIT 表做累计→单季 + TTM + 单季同比（口径一致、跨期可比）。
+
+    解决"截面混报告期、累计口径不可比"：单季/TTM 字段与报告期长度无关。
+    新增列：<f>_q / <f>_ttm / <f>_q_yoy（f ∈ TS_FLOW_FIELDS）。
+    """
+    from quantlab.data import fundamentals_features as ff
+    base = df if df is not None else load_pit()
+    feat = ff.to_single_quarter(base, flow_fields=TS_FLOW_FIELDS)
+    feat = ff.add_ttm(feat, flow_fields=TS_FLOW_FIELDS)
+    feat = ff.add_single_quarter_yoy(feat, flow_fields=TS_FLOW_FIELDS)
+    if save:
+        TS_FEATURES_FILE.parent.mkdir(parents=True, exist_ok=True)
+        feat.to_parquet(TS_FEATURES_FILE, index=False)
+    return feat
+
+
 def point_in_time(as_of, symbols=None) -> pd.DataFrame:
-    """PIT 查询（基于 Tushare 真实 f_ann_date）：截至 as_of 已公告的每只最新财报。"""
+    """PIT 查询（基于 Tushare 真实 f_ann_date）：截至 as_of 已公告的每只最新财报。
+
+    若已构建特征表（tushare_features.parquet）则优先用它（含单季/TTM/同比）。
+    """
     as_of = pd.Timestamp(as_of)
-    df = load_pit()
+    if TS_FEATURES_FILE.exists():
+        df = pd.read_parquet(TS_FEATURES_FILE)
+        for c in ("report_period", "announce_date"):
+            df[c] = pd.to_datetime(df[c], errors="coerce")
+    else:
+        df = load_pit()
     df = df[df["announce_date"].notna() & (df["announce_date"] <= as_of)]
     if symbols is not None:
         syms = [str(s).zfill(6) for s in symbols]

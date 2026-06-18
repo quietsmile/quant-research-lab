@@ -38,8 +38,10 @@ def _factor_value(snap: pd.DataFrame, name: str) -> pd.Series:
         return snap["roe"]
     if name == "dedt_yield":          # 扣非净利 / 营收（粗略盈利质量）
         return snap["profit_dedt"] / snap["revenue"].replace(0, np.nan)
-    if name == "np_growth":           # 归母净利累计同比（用现成字段近似）
-        return snap.get("net_profit")  # 占位：真增长需单季，见下游 features
+    if name == "dedt_margin_ttm":     # 扣非TTM / 营收TTM（口径一致、跨期可比）
+        return snap["profit_dedt_ttm"] / snap["revenue_ttm"].replace(0, np.nan)
+    if name == "np_growth_q":         # 归母净利单季同比（去季节性的成长因子）
+        return snap["net_profit_q_yoy"]
     raise ValueError(name)
 
 

@@ -29,12 +29,16 @@ def _quarter_no(periods: pd.Series) -> pd.Series:
     return periods.dt.month.map({3: 1, 6: 2, 9: 3, 12: 4})
 
 
-def to_single_quarter(df: pd.DataFrame) -> pd.DataFrame:
-    """累计 → 单季。为每个流量字段新增 <field>_q 列。"""
+def to_single_quarter(df: pd.DataFrame, flow_fields: list[str] | None = None) -> pd.DataFrame:
+    """累计 → 单季。为每个流量字段新增 <field>_q 列。
+
+    flow_fields 默认 yjbb 的 FLOW_FIELDS；其他源（如 Tushare）可传入自己的累计字段。
+    """
+    fields = flow_fields if flow_fields is not None else FLOW_FIELDS
     out = df.sort_values(["symbol", "report_period"]).copy()
     out["fy"] = out["report_period"].dt.year
     out["q"] = _quarter_no(out["report_period"])
-    for f in FLOW_FIELDS:
+    for f in fields:
         if f not in out.columns:
             continue
         # 取同一公司、同一财年、上一个季度(q-1)的累计值
@@ -47,10 +51,11 @@ def to_single_quarter(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def add_ttm(df: pd.DataFrame) -> pd.DataFrame:
+def add_ttm(df: pd.DataFrame, flow_fields: list[str] | None = None) -> pd.DataFrame:
     """TTM：对单季字段做滚动 4 季求和（要求连续四季，否则 NaN）。"""
+    fields = flow_fields if flow_fields is not None else FLOW_FIELDS
     out = df.sort_values(["symbol", "report_period"]).copy()
-    for f in FLOW_FIELDS:
+    for f in fields:
         qcol = f + "_q"
         if qcol not in out.columns:
             continue
@@ -60,10 +65,11 @@ def add_ttm(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def add_single_quarter_yoy(df: pd.DataFrame) -> pd.DataFrame:
+def add_single_quarter_yoy(df: pd.DataFrame, flow_fields: list[str] | None = None) -> pd.DataFrame:
     """单季同比：<field>_q 对去年同季。新增 <field>_q_yoy。"""
+    fields = flow_fields if flow_fields is not None else FLOW_FIELDS
     out = df.copy()
-    for f in FLOW_FIELDS:
+    for f in fields:
         qcol = f + "_q"
         if qcol not in out.columns:
             continue

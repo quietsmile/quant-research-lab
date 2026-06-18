@@ -24,3 +24,18 @@ def test_fundamentals_pit_live():
     # 茅台 2023 年报实际公告日 2024-04-03
     annual = df[df["report_period"] == pd.Timestamp("2023-12-31")]
     assert annual["announce_date"].iloc[0] == pd.Timestamp("2024-04-03")
+
+
+def test_point_in_time_dispatch(tmp_path, monkeypatch):
+    """统一 point_in_time：有 Tushare 库走 tushare，无则回落 legacy。"""
+    import quantlab.data.tushare_adapter as tsa
+    import quantlab.data.pit as pit
+
+    missing = tmp_path / "nope.parquet"
+    monkeypatch.setattr(tsa, "TS_FUND_FILE", missing)
+    assert pit.active_source() == "legacy"      # 库不存在 → 回落
+
+    present = tmp_path / "tushare_pit.parquet"
+    present.write_bytes(b"x")                     # 仅存在性判断
+    monkeypatch.setattr(tsa, "TS_FUND_FILE", present)
+    assert pit.active_source() == "tushare"      # 库存在 → 走 tushare

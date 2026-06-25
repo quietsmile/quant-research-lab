@@ -14,8 +14,8 @@ import pathlib
 DD = pathlib.Path("/home/claudeuser/econ/quant-research-lab/dashboard_data")
 
 st.set_page_config(page_title="Quant Research Lab", layout="wide")
-page = st.sidebar.radio("页面", ["🛡️ 大盘稳健族(低小盘)", "📊 策略族 & Barra 暴露",
-                                 "🎛️ 策略调参", "📈 前瞻事件策略 · Test 操作"])
+page = st.sidebar.radio("页面", ["🛡️ 大盘稳健族(低小盘)", "🤖 ML Alpha(LightGBM复现)",
+                                 "📊 策略族 & Barra 暴露", "🎛️ 策略调参", "📈 前瞻事件策略 · Test 操作"])
 
 
 @st.cache_resource(show_spinner="加载策略引擎…")
@@ -285,8 +285,49 @@ def page_largecap():
             st.markdown(f"**{k}** — 参数 `{v['P']}` | SMB {v['smb']:+.2f} | α {v['alpha']*100:+.0f}% | 逐年 {v.get('by', {})}")
 
 
+def page_ml():
+    st.title("🤖 ML Alpha · 复现 QuantMind(Alpha158式因子 + LightGBM)")
+    st.caption("复现 github.com/qusong0627/quantmind 核心：~25 个 Alpha158 式量价因子 + LightGBM 预测下月收益，"
+               "**严格逐年 walk-forward**(只用当年以前训练)，大盘&质量内 Top-50 等权、月度、含成本。")
+    try:
+        d = json.load(open(DD / "ml_alpha.json"))
+        nav = pd.read_parquet(DD / "ml_alpha_nav.parquet")
+    except Exception as e:  # noqa: BLE001
+        st.error(f"结果未就绪，请先运行 examples/ml_alpha.py：{e}"); return
+    bl, ml = d["blend"], d["ml"]
+    c = st.columns(6)
+    c[0].metric("融合 全期年化", f"{bl['cagr']*100:+.0f}%")
+    c[1].metric("融合 夏普", f"{bl['sharpe']:.2f}")
+    c[2].metric("融合 回撤", f"{bl['maxdd']*100:+.0f}%")
+    c[3].metric("融合 冻结Test夏普", f"{d['blend_test']['sharpe']:.2f}", f"{d['blend_test']['cagr']*100:+.0f}% CAGR")
+    c[4].metric("纯ML 夏普", f"{ml['sharpe']:.2f}")
+    c[5].metric("Barra α(t)", f"{d['alpha_ann']*100:+.0f}%", f"t={d['alpha_t']:.1f}")
+    st.warning("**诚实结论**：ML(及融合)的 Barra **α 不显著(t≈0.3)、R²≈50-60%、MKT beta 0.5-0.7** → "
+               "收益**主要是市场 beta，不是独立 alpha**；全期夏普(0.48-0.53)**未超过简单的 L5 大盘价值+低波(0.76/回撤-21%)**。"
+               "冻结Test看着强(1.1-1.5)多来自 beta + 强 Test 窗口。**ML 在此数据上没带来真 alpha。**")
+    fig = go.Figure()
+    for col, c0 in [("ML+价值+低波", "crimson"), ("ML纯预测", "orange"), ("沪深300", "black")]:
+        if col in nav:
+            fig.add_trace(go.Scatter(x=nav["date"], y=nav[col], name=col,
+                                     line=dict(width=2 if col != "沪深300" else 1.3, dash="dash" if col == "沪深300" else "solid", color=c0)))
+    fig.update_layout(title="净值(2021–2026，含成本；黑虚=沪深300)", height=360, margin=dict(l=10, r=10, t=40, b=10), legend=dict(orientation="h"))
+    st.plotly_chart(fig, use_container_width=True)
+    c1, c2 = st.columns(2)
+    exp = d["barra"]
+    figb = px.bar(x=list(exp), y=list(exp.values()), title=f"Barra 暴露 | MKT高=市场beta, SIZE≈0=不靠小盘, α{d['alpha_ann']*100:+.0f}%(t{d['alpha_t']:.1f})")
+    figb.add_hline(y=0, line_color="gray"); figb.update_layout(height=330, margin=dict(l=10, r=10, t=40, b=10))
+    c1.plotly_chart(figb, use_container_width=True)
+    imp = d["top_features"]
+    figi = px.bar(x=list(imp.values())[::-1], y=list(imp)[::-1], orientation="h", title="LightGBM Top 因子重要性")
+    figi.update_layout(height=330, margin=dict(l=10, r=10, t=40, b=10))
+    c2.plotly_chart(figi, use_container_width=True)
+    st.caption(f"逐年收益(融合)：{d.get('yearly', {})}。Top因子以短期反转/动量/波动/换手为主。")
+
+
 if page.startswith("🛡️"):
     page_largecap()
+elif page.startswith("🤖"):
+    page_ml()
 elif page.startswith("📊"):
     page_strategy_family()
 elif page.startswith("🎛️"):

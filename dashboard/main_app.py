@@ -17,6 +17,13 @@ try:
     HS300_DAILY = _bench["沪深300"]
 except Exception:  # noqa: BLE001
     HS300_DAILY = None
+try:
+    _f500 = pathlib.Path.home() / ".local/share/quantlab/fundamentals/idx500.parquet"
+    _s5 = pd.read_parquet(_f500)["close"]; _s5.index = pd.to_datetime(_s5.index)
+    CSI500_DAILY = _s5.pct_change()                     # 中证500 日收益(分年度对冲基准)
+except Exception:  # noqa: BLE001
+    CSI500_DAILY = None
+MT_CFG = DD / "ml_trade_saved_configs.json"             # 参数预设存档
 
 st.set_page_config(page_title="Quant Research Lab", layout="wide")
 page = st.sidebar.radio("页面", ["🛡️ 大盘稳健族(低小盘)", "🧪 ML交易调参", "📚 LightGBM详解",
@@ -354,13 +361,28 @@ def page_ml_trade():
     st.title("🧪 ML 交易调参 · 纯信号 + 后处理规则(全可调)")
     st.caption("**模型只学纯收益信号**(LightGBM 预测未来5/10/20日收益的横截面rank、多视野集成)；下面所有规则都是"
                "**模型之后的后处理**，可自由调：持有期、选股数、跳开过滤、止损、基本面池、真实撮合。次日开盘买入、含成本。")
-    hold = st.sidebar.select_slider("持有期(交易日)", [3, 5, 10, 20], value=10)
-    top_n = st.sidebar.slider("选股数 Top-N", 10, 40, 20, 5)
-    gap = st.sidebar.slider("跳开过滤(开盘相对昨收涨幅>此值则不买) %", 2, 12, 5) / 100
-    stop = st.sidebar.slider("止损 %", 4, 20, 8) / 100
-    fund = st.sidebar.checkbox("加基本面池(趋势&扣非ROE>0&利润增>0)", value=True)
-    realistic = st.sidebar.checkbox("真实撮合(涨停不买/跌停·停牌不卖顺延)", value=True)
-    exst = st.sidebar.checkbox("排除 ST/*ST", value=True)
+    cfgs = json.load(open(MT_CFG)) if MT_CFG.exists() else {}
+    with st.sidebar.expander("💾 参数预设", expanded=False):        # 加载放在控件之前(才能写 session_state)
+        if cfgs:
+            pick = st.selectbox("已存配置", ["—"] + list(cfgs))
+            if pick != "—" and st.button("加载该配置"):
+                for k, v in cfgs[pick].items():
+                    st.session_state[k] = v
+                st.rerun()
+    hold = st.sidebar.select_slider("持有期(交易日)", [3, 5, 10, 20], value=10, key="mt_hold")
+    top_n = st.sidebar.slider("选股数 Top-N", 10, 40, 20, 5, key="mt_topn")
+    gap = st.sidebar.slider("跳开过滤(开盘相对昨收涨幅>此值则不买) %", 2, 12, 5, key="mt_gap") / 100
+    stop = st.sidebar.slider("止损 %", 4, 20, 8, key="mt_stop") / 100
+    fund = st.sidebar.checkbox("加基本面池(趋势&扣非ROE>0&利润增>0)", value=True, key="mt_fund")
+    realistic = st.sidebar.checkbox("真实撮合(涨停不买/跌停·停牌不卖顺延)", value=True, key="mt_real")
+    exst = st.sidebar.checkbox("排除 ST/*ST", value=True, key="mt_exst")
+    with st.sidebar.expander("💾 保存当前参数", expanded=False):
+        nm = st.text_input("命名", key="mt_savename")
+        if st.button("保存") and nm:
+            cfgs[nm] = {"mt_hold": hold, "mt_topn": top_n, "mt_gap": int(gap * 100), "mt_stop": int(stop * 100),
+                        "mt_fund": fund, "mt_real": realistic, "mt_exst": exst}
+            json.dump(cfgs, open(MT_CFG, "w"), ensure_ascii=False)
+            st.success(f"已保存「{nm}」")
     try:
         r = _ml_sim(hold, top_n, gap, stop, fund, realistic, exst)
     except Exception as e:  # noqa: BLE001
@@ -384,7 +406,44 @@ def page_ml_trade():
     st.plotly_chart(fig, use_container_width=True)
     st.info("注：这是把 ML 信号交给可调后处理规则的结果——**训练与规则解耦**。短持有(3/5日)通常被成本/反转吃掉，"
             "持有期拉长更稳(默认10日,夏普≈0.79);本族整体未超过 L5,主要是市场 beta。")
+    st.subheader("📅 分年度：每年是否都有 alpha？")
+    py = _per_year_alpha(r["nav"])
+    disp = py.copy()
+    for col in ["策略收益", "对冲后α收益"]:
+        if col in disp:
+            disp[col] = (disp[col] * 100).round(0).astype(int).astype(str) + "%"
+    for col in ["策略夏普", "对冲后α夏普"]:
+        if col in disp:
+            disp[col] = disp[col].round(2)
+    st.dataframe(disp, use_container_width=True, hide_index=True)
+    if "对冲后α夏普" in py:
+        pos = int((py["对冲后α夏普"] > 0).sum()); tot = len(py)
+        st.caption(f"「对冲后α」= 用**滚动60日β中性**对冲掉中证500 beta 后的残差(纯特质 alpha)。"
+                   f"**{pos}/{tot} 年的 α 夏普为正**。若 α 只集中在个别年份(如2024)、其余≈0或负 → "
+                   f"它不是稳定的独立 alpha,而是某些窗口的 beta/风格;若多数年份为正 → alpha 较稳。")
     _ml_decomp()
+
+
+def _per_year_alpha(nav):
+    """分年度:策略收益/夏普 + 对冲后(滚动60日β中性,中证500)残差α收益/夏普。"""
+    ret = nav.pct_change().dropna()
+    b = CSI500_DAILY.reindex(ret.index).fillna(0) if CSI500_DAILY is not None else None
+    if b is not None:
+        beta = (ret.rolling(60).cov(b) / (b.rolling(60).var() + 1e-12)).shift(1)
+        resid = ret - beta * b
+    rows = []
+    for y in sorted({d.year for d in ret.index}):
+        rr = ret[ret.index.year == y]
+        if len(rr) < 60:                                 # 跳过数据稀疏的年份(OOS边界)
+            continue
+        row = {"年": y, "策略收益": float((1 + rr).prod() - 1),
+               "策略夏普": float(rr.mean() / (rr.std() + 1e-12) * (242 ** 0.5))}
+        if b is not None:
+            res = resid[resid.index.year == y].dropna()
+            row["对冲后α收益"] = float(res.sum())
+            row["对冲后α夏普"] = float(res.mean() / (res.std() + 1e-12) * (242 ** 0.5)) if len(res) else float("nan")
+        rows.append(row)
+    return pd.DataFrame(rows)
 
 
 def _ml_decomp():

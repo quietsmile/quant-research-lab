@@ -389,8 +389,13 @@ def page_ml_pipeline():
     st.markdown(f"- **股票池**：liq1500（大中盘为主，含部分退市）。\n"
                 f"- **因子(X)**：{len(meta['feats'])} 个 Alpha158 式量价+基本面因子 → `{', '.join(meta['feats'])}`\n"
                 f"- **标签(y)**：{meta['label']}（截面，clip ±50%）。\n"
-                f"- **训练样本**：{meta['n_train_samples']:,} 行（每 {meta['train_step']} 个交易日采样一次截面，降冗余）。\n"
+                f"- **训练样本**：{meta['n_train_samples']:,} 行/视野（每 {meta['train_step']} 个交易日采样一次截面，降冗余）。\n"
                 f"- 缺失值用**训练集中位数**填充（不泄漏测试信息）。")
+    if meta.get("horizons"):
+        st.success(f"**IC 提升技巧（经受控实验 examples/ml_ic_experiments*.py 确认）**：\n"
+                   f"① 训练标签用「未来收益的**横截面 rank**」而非原始收益——让模型学排序、对离群与大盘整体涨跌更稳，"
+                   f"是最大杠杆（季度口径 IC +50%+）；② **多视野集成**：对 {'/'.join(map(str, meta['horizons']))} 日收益各训一模型、"
+                   f"预测取平均，跨视野去噪再 +6%。反例：对**特征**做横截面标准化反而有害（树模型本就尺度不敏感）、去市值中性也无益。")
     st.subheader(f"② 训练（{meta.get('retrain', '逐年')} walk-forward，严格防前视 + purge）")
     folds = pd.DataFrame(meta["folds"])
     st.markdown(f"**每预测一个月**，只用「该月之前的全部截面」重训 LightGBM(200树/叶31/lr0.03/行列采样)，"

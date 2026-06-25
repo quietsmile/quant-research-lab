@@ -37,12 +37,17 @@ def load_signal():
 SIG_H = 10   # 信号的预测视野(纯信号,与持有期解耦——持有期是后处理)
 
 
-def train_signal(label_h=SIG_H, train_step=2):
-    """训纯信号模型:label=未来 label_h 日收益,逐年 walk-forward,**逐(隔)日出分**。
+def train_signal(label_h=SIG_H, train_step=2, purge=None):
+    """训纯信号模型:label=未来 label_h 日收益,**月度扩张窗口** walk-forward,逐(隔)日出分。
 
+    每个月预测前,用「该月之前的全部数据」重训一次(含最近几个月)——严格 PIT:
+    训练样本须在预测起点前 purge 个交易日(默认=label_h),确保其未来收益标签已实现、不泄漏。
+    这样每个预测点都用满了它之前的所有数据(尤其近期),而非冻结在去年底。
     训练只学收益预测,不含任何交易规则(跳开/止损/持有期/基本面)——这些都后处理。
     train_step: 训练样本采样间隔(2=隔日,降冗余/提速);预测对所有交易日。
     """
+    if purge is None:
+        purge = label_h
     F, _label, close = build_features()
     feats = list(F)
     label = (close.shift(-label_h) / close - 1).clip(-0.5, 0.5)
@@ -53,28 +58,36 @@ def train_signal(label_h=SIG_H, train_step=2):
         df = pd.DataFrame({k: v.loc[d] for k, v in F.items()})
         df["y"] = label.loc[d]; df["date"] = d; df["symbol"] = df.index
         rows.append(df)
-    data = pd.concat(rows).dropna(subset=["y"]); data["year"] = data["date"].dt.year
+    data = pd.concat(rows).dropna(subset=["y"])
     pred_panel = pd.DataFrame(np.nan, index=idx, columns=syms)
     meta = {"feats": feats, "label": f"未来{label_h}日收益", "n_train_samples": int(len(data)),
-            "train_step": train_step, "folds": [], "ic": []}
+            "train_step": train_step, "purge": purge, "retrain": "月度扩张窗口(每月用该月以前全部数据重训)",
+            "folds": [], "ic": []}
     imp_acc = np.zeros(len(feats))
-    for Y in range(2021, 2027):
-        tr = data[data.year < Y]
-        te_days = [d for d in idx if d.year == Y]
-        if len(tr) < 4000 or not te_days:
+    ipos = {d: i for i, d in enumerate(idx)}
+    months = sorted({(d.year, d.month) for d in idx if d.year >= 2021})
+    for (Y, M) in months:
+        te_days = [d for d in idx if d.year == Y and d.month == M]
+        if not te_days:
+            continue
+        cut_i = ipos[te_days[0]] - purge                 # purge:标签须已实现(预测起点前 purge 日)
+        if cut_i <= 0:
+            continue
+        cut_date = idx[cut_i]
+        tr = data[data["date"] <= cut_date]
+        if len(tr) < 4000:
             continue
         med = tr[feats].median()
         m = lgb.LGBMRegressor(n_estimators=200, num_leaves=31, learning_rate=0.03, subsample=0.8,
                               colsample_bytree=0.7, min_child_samples=100, n_jobs=4, verbosity=-1)
         m.fit(tr[feats].fillna(med), tr["y"])
-        # 预测该年所有交易日(逐日出分)
-        for d in te_days:
+        for d in te_days:                                # 预测该月所有交易日(逐日出分)
             X = pd.DataFrame({k: v.loc[d] for k, v in F.items()}).fillna(med)
             pred_panel.loc[d] = m.predict(X[feats])
-            yy = label.loc[d]
-            ic = pd.Series(pred_panel.loc[d], index=syms).corr(yy, method="spearman")
+            ic = pd.Series(pred_panel.loc[d], index=syms).corr(label.loc[d], method="spearman")
             if pd.notna(ic): meta["ic"].append({"date": str(d.date()), "ic": round(float(ic), 4)})
-        meta["folds"].append({"year": Y, "train_rows": int(len(tr)), "test_days": len(te_days)})
+        meta["folds"].append({"month": f"{Y}-{M:02d}", "train_rows": int(len(tr)),
+                              "train_end": str(cut_date.date()), "test_days": len(te_days)})
         imp_acc += m.feature_importances_
     meta["importance"] = pd.Series(imp_acc, index=feats).sort_values(ascending=False).round(0).to_dict()
     meta["mean_ic"] = round(float(np.mean([x["ic"] for x in meta["ic"]])), 4) if meta["ic"] else None
@@ -151,7 +164,7 @@ def metrics(port):
 
 
 def main():
-    print("训练纯信号模型(label=未来10日收益, 逐年walk-forward, 逐日出分)...", flush=True)
+    print("训练纯信号模型(label=未来10日收益, 月度扩张窗口walk-forward+purge, 逐日出分)...", flush=True)
     pred, meta = train_signal()
     pred.to_parquet(DD / "ml_signal.parquet")
     json.dump(meta, open(DD / "ml_signal_meta.json", "w"), ensure_ascii=False, default=float)

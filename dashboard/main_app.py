@@ -390,10 +390,16 @@ def page_ml_pipeline():
                 f"- **标签(y)**：{meta['label']}（截面，clip ±50%）。\n"
                 f"- **训练样本**：{meta['n_train_samples']:,} 行（每 {meta['train_step']} 个交易日采样一次截面，降冗余）。\n"
                 f"- 缺失值用**训练集中位数**填充（不泄漏测试信息）。")
-    st.subheader("② 训练（逐年 walk-forward，严格防前视）")
+    st.subheader(f"② 训练（{meta.get('retrain', '逐年')} walk-forward，严格防前视 + purge）")
     folds = pd.DataFrame(meta["folds"])
-    st.markdown("每预测一年，只用**该年以前**的所有截面训练 LightGBM(200树/叶31/lr0.03/行列采样)，逐年滚动：")
-    st.dataframe(folds.rename(columns={"year": "预测年", "train_rows": "训练样本", "test_days": "预测交易日数"}), use_container_width=True)
+    st.markdown(f"**每预测一个月**，只用「该月之前的全部截面」重训 LightGBM(200树/叶31/lr0.03/行列采样)，"
+                f"扩张窗口逐月滚动；训练样本须在预测起点前 **{meta.get('purge', 10)} 个交易日**（标签已实现、防泄漏）。"
+                f"这样每个预测点都用满了它之前的所有数据（含最近几个月），而非冻结在去年底：")
+    if "month" in folds.columns:
+        st.dataframe(folds.rename(columns={"month": "预测月", "train_rows": "训练样本",
+                     "train_end": "训练截止", "test_days": "预测交易日数"}), use_container_width=True, height=300)
+    else:
+        st.dataframe(folds.rename(columns={"year": "预测年", "train_rows": "训练样本", "test_days": "预测交易日数"}), use_container_width=True)
     st.subheader("③ 测试（样本外预测质量）")
     ic = pd.DataFrame(meta["ic"]);
     if len(ic):

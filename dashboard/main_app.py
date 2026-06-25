@@ -354,7 +354,7 @@ def page_ml_trade():
     st.title("🧪 ML 交易调参 · 纯信号 + 后处理规则(全可调)")
     st.caption("**模型只学纯收益信号**(LightGBM 预测未来5/10/20日收益的横截面rank、多视野集成)；下面所有规则都是"
                "**模型之后的后处理**，可自由调：持有期、选股数、跳开过滤、止损、基本面池、真实撮合。次日开盘买入、含成本。")
-    hold = st.sidebar.select_slider("持有期(交易日)", [3, 5, 10, 20], value=5)
+    hold = st.sidebar.select_slider("持有期(交易日)", [3, 5, 10, 20], value=10)
     top_n = st.sidebar.slider("选股数 Top-N", 10, 40, 20, 5)
     gap = st.sidebar.slider("跳开过滤(开盘相对昨收涨幅>此值则不买) %", 2, 12, 5) / 100
     stop = st.sidebar.slider("止损 %", 4, 20, 8) / 100
@@ -383,7 +383,77 @@ def page_ml_trade():
     fig.update_layout(title="净值(含成本)", height=360, margin=dict(l=10, r=10, t=40, b=10), legend=dict(orientation="h"))
     st.plotly_chart(fig, use_container_width=True)
     st.info("注：这是把 ML 信号交给可调后处理规则的结果——**训练与规则解耦**。短持有(3/5日)通常被成本/反转吃掉，"
-            "持有期拉长更稳；本族整体未超过 L5,主要是市场 beta(见 ML Alpha 页 Barra)。")
+            "持有期拉长更稳(默认10日,夏普≈0.79);本族整体未超过 L5,主要是市场 beta。")
+    _ml_decomp()
+
+
+def _ml_decomp():
+    """该策略(生产信号)的指标与拆解:信号质量/分层单调/breadth&对冲/容量/乐观度。"""
+    try:
+        a = json.load(open(DD / "ml_trade_analysis.json"))
+    except Exception:  # noqa: BLE001
+        st.caption("（拆解数据未就绪：运行 examples/precompute_ml_analysis.py）"); return
+    st.markdown("---"); st.subheader("📐 这个策略的指标 & 拆解（同一生产信号）")
+    sg = a["signal"]
+    st.caption(f"信号：{sg['label']}｜{sg['retrain']}｜{sg['feats']} 因子")
+    t1, t2, t3, t4, t5 = st.tabs(["信号质量", "分层单调性", "breadth & 对冲alpha", "资金容量", "乐观度拆解"])
+
+    with t1:
+        c = st.columns(4)
+        c[0].metric("样本外 RankIC", f"{sg['mean_ic']:.4f}")
+        c[1].metric("ICIR", f"{sg['icir']:.3f}"); c[2].metric("IC>0 胜率", f"{sg['win']*100:.0f}%")
+        c[3].metric("IC t值", f"{sg['t']:.1f}")
+        ts = pd.DataFrame(a["ic_ts"]); ts["date"] = pd.to_datetime(ts["date"])
+        f = go.Figure(go.Scatter(x=ts["date"], y=ts["ic"], name="IC(20日均)"))
+        f.add_hline(y=0, line_color="gray"); f.add_hline(y=sg["mean_ic"], line_dash="dot", line_color="red")
+        f.update_layout(title="样本外 IC(20日平滑) 随时间", height=280, margin=dict(l=10, r=10, t=40, b=10))
+        st.plotly_chart(f, use_container_width=True)
+
+    with t2:
+        d = a["deciles"]
+        f = go.Figure(go.Bar(x=[f"D{i+1}" for i in range(10)], y=d["pure"], marker_color="steelblue"))
+        f.update_layout(title="10 层未来10日平均收益%(D1低→D10高,纯信号全截面)", height=280, margin=dict(l=10, r=10, t=40, b=10))
+        st.plotly_chart(f, use_container_width=True)
+        h = d["head"]
+        st.caption(f"**头部细分**(Top-20≈top1.3%)：top10% {h['top10%']:+.2f} → top5% {h['top5%']:+.2f} → "
+                   f"top2% {h['top2%']:+.2f} → top1% {h['top1%']:+.2f}%。头部越往里越强、无 roll-off → "
+                   f"Top-N 选对了最强子区，低夏普是 breadth 问题；但中段(D2–D8)是噪声，edge 集中两端。")
+
+    with t3:
+        b = pd.DataFrame(a["breadth"])
+        f = go.Figure()
+        f.add_trace(go.Scatter(x=b["N"], y=b["long_sharpe"], name="多头夏普", mode="lines+markers", line=dict(color="crimson")))
+        f.add_trace(go.Scatter(x=b["N"], y=b["hedge_net_ic"], name="对冲后净alpha夏普(中证500,滚动β扣贴水)",
+                               mode="lines+markers", line=dict(color="seagreen")))
+        f.add_hline(y=0, line_color="gray")
+        f.update_layout(title="夏普 vs 持仓数 N(扩 breadth 不救:edge集中头部、衰减快过√breadth)",
+                        height=300, margin=dict(l=10, r=10, t=40, b=10), legend=dict(orientation="h"))
+        st.plotly_chart(f, use_container_width=True)
+        st.dataframe(b.rename(columns={"N": "持仓数", "long_sharpe": "多头夏普", "maxdd": "回撤", "calmar": "Calmar",
+                     "hedge_net_ic": "对冲净alpha", "ic_beta": "中证500β", "size": "市值%ile",
+                     "q1ret": "2024Q1收益", "q1dd": "2024Q1回撤"})[["持仓数", "多头夏普", "回撤", "Calmar",
+                     "对冲净alpha", "中证500β", "市值%ile", "2024Q1收益", "2024Q1回撤"]], use_container_width=True)
+        st.caption("对冲用**滚动60日β中性(PIT)扣贴水**;只有最集中的 Top-20 对冲后净alpha为正(其余转负)→半中证500 beta+半弱alpha。")
+
+    with t4:
+        cap = pd.DataFrame(a["capacity"]); cap["aum"] = cap["aum_yi"].apply(lambda x: f"{x:.2f}亿" if x >= 1 else f"{x*1e4:.0f}万")
+        f = go.Figure(go.Scatter(x=cap["aum_yi"], y=cap["net_cagr"], mode="lines+markers", line=dict(color="purple")))
+        f.add_hline(y=0, line_color="gray")
+        f.update_layout(title="净年化 vs 资金规模(亿元) — 净跌到0即容量天花板", height=280,
+                        xaxis_type="log", margin=dict(l=10, r=10, t=40, b=10))
+        st.plotly_chart(f, use_container_width=True)
+        st.caption("Top-20 容量天花板 ≈ **5000万–1亿**:超过被市场冲击吃光收益(3亿时 27% 单子破 10% 参与率上限)。"
+                   "edge 集中头部→既难分散又装不下钱,是小资金策略。")
+
+    with t5:
+        op = pd.DataFrame(a["optimism"])
+        f = go.Figure(go.Bar(x=op["step"], y=op["cagr"] * 100,
+                             marker_color=["#2c7", "#2c7", "#7b5", "#fb3", "#f93", "#e33"]))
+        f.update_layout(title="乐观度拆解:同一信号逐步松绑严格项→年化%(末档=样本内泄漏)", height=300,
+                        margin=dict(l=10, r=10, t=40, b=10))
+        st.plotly_chart(f, use_container_width=True)
+        st.caption("严格基线 +10% → 去成本/日频/小盘 +19% → **样本内泄漏(去walk-forward) +51%**。"
+                   "别人 30–70% 的年化大头是样本内泄漏 + 小盘 beta,不是模型更强。")
 
 
 def page_ml_pipeline():

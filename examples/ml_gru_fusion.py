@@ -64,7 +64,7 @@ def main():
         for ep in range(4):
             np.random.RandomState(ep).shuffle(idx_all)
             for s in range(0, len(idx_all), 4096):
-                bi = idx_all[s:s + 4096]
+                bi = torch.from_numpy(idx_all[s:s + 4096].astype("int64"))
                 opt.zero_grad(); out = net(X[bi]); loss = lossf(out, Yt[bi]); loss.backward(); opt.step()
         net.eval()
         with torch.no_grad():

@@ -14,7 +14,77 @@ import pathlib
 DD = pathlib.Path("/home/claudeuser/econ/quant-research-lab/dashboard_data")
 
 st.set_page_config(page_title="Quant Research Lab", layout="wide")
-page = st.sidebar.radio("页面", ["📊 策略族 & Barra 暴露", "📈 前瞻事件策略 · Test 操作"])
+page = st.sidebar.radio("页面", ["📊 策略族 & Barra 暴露", "🎛️ 策略调参(S2/S3/S6)",
+                                 "📈 前瞻事件策略 · Test 操作"])
+
+
+@st.cache_resource(show_spinner="加载策略引擎…")
+def _engine():
+    from examples import strategy_family as sf
+    return sf
+
+
+@st.cache_data(show_spinner="回测中…")
+def _eval(name, items):
+    sf = _engine()
+    m = sf.eval_config(name, dict(items))
+    return {k: v for k, v in m.items() if k not in ("port",)}  # nav 保留(画图用)
+
+
+@st.cache_data(show_spinner="扫描参数网格…")
+def _grid(name):
+    return _engine().grid_sharpes(name)
+
+
+def page_tune():
+    st.title("🎛️ 策略调参 · 自由调整参数看指标分布")
+    st.caption("选 S2/S3/S6，拖动参数实时回测：完整指标 + dev/冻结Test + Barra 暴露 + 净值，"
+               "并显示当前配置在**全参数网格夏普分布**中的位置。回测 2020–2026、含成本、强制分散。")
+    sf = _engine()
+    cand = {"S2 质量+价值EP": "S2 质量+价值EP", "S3 质量+低波": "S3 质量+低波", "S6 多因子融合": "S6 多因子融合"}
+    name = st.sidebar.selectbox("策略", list(cand))
+    space = sf.STRATS[name][2]
+    P = {}
+    for k, opts in space.items():
+        P[k] = st.sidebar.select_slider(k, options=opts, value=opts[len(opts) // 2])
+    m = _eval(name, tuple(sorted(P.items())))
+
+    c = st.columns(6)
+    c[0].metric("年化", f"{m['cagr']*100:+.0f}%")
+    c[1].metric("夏普(全)", f"{m['sharpe']:.2f}")
+    c[2].metric("最大回撤", f"{m['maxdd']*100:+.0f}%")
+    c[3].metric("Calmar", f"{m['calmar']:.2f}")
+    c[4].metric("dev夏普", f"{m['dev_sharpe']:.2f}")
+    c[5].metric("冻结Test夏普", f"{m['test_sharpe']:.2f}", f"{m['test_cagr']*100:+.0f}% CAGR")
+    st.caption(f"持股 {m['nh']:.0f} | 子区间夏普 20-22 {m['sh1']:.2f} / 23-26 {m['sh2']:.2f} | "
+               f"最差年 {m['worst']:+.0f}% | 当前参数 {P}")
+
+    l, r = st.columns(2)
+    nav = m["nav"]
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=nav.index, y=nav.values, name="策略净值", line=dict(color="crimson", width=2)))
+    bn = (1 + sf.MKT.reindex(nav.index).fillna(0)).cumprod()
+    fig.add_trace(go.Scatter(x=bn.index, y=bn.values, name="等权大盘", line=dict(color="gray", dash="dash")))
+    fig.add_vline(x=sf.TEST_START, line_dash="dot", annotation_text="冻结Test起")
+    fig.update_layout(title="净值 vs 等权(竖线右为冻结Test)", height=330, margin=dict(l=10, r=10, t=40, b=10), legend=dict(orientation="h"))
+    l.plotly_chart(fig, use_container_width=True)
+
+    # Barra 暴露
+    exp = m["barra"].get("exposure", {})
+    if exp:
+        figb = px.bar(x=list(exp), y=list(exp.values()), title=f"Barra 风格暴露 | α年化 {m['barra']['alpha_ann']*100:+.0f}%(t{m['barra']['alpha_t']:+.1f}) R²{m['barra']['r2']:.0%}")
+        figb.update_layout(height=330, margin=dict(l=10, r=10, t=40, b=10)); figb.add_hline(y=0, line_color="gray")
+        r.plotly_chart(figb, use_container_width=True)
+
+    # 参数网格夏普分布 + 当前位置
+    gs = _grid(name)
+    shs = [g["sharpe"] for g in gs]
+    figd = px.histogram(x=shs, nbins=12, title=f"全参数网格夏普分布({len(shs)}个配置)，红线=当前配置")
+    figd.add_vline(x=m["sharpe"], line_color="red", annotation_text="当前")
+    figd.update_layout(height=300, margin=dict(l=10, r=10, t=40, b=10), xaxis_title="夏普", yaxis_title="配置数")
+    st.plotly_chart(figd, use_container_width=True)
+    st.info("⚠ 提醒：dev 夏普通常高于冻结 Test(过拟合衰减)；本族经确认 **DSR<90%、且 Test 跑输等权(夏普1.42)**，"
+            "调参主要用于理解参数敏感性，不代表已是稳健可投策略。")
 
 
 def page_strategy_family():
@@ -104,5 +174,7 @@ def page_event():
 
 if page.startswith("📊"):
     page_strategy_family()
+elif page.startswith("🎛️"):
+    page_tune()
 else:
     page_event()

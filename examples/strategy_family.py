@@ -11,7 +11,7 @@ import warnings; warnings.filterwarnings("ignore")
 import itertools, json, pathlib
 import numpy as np, pandas as pd
 
-from quantlab import barra
+from quantlab import barra, eval as _ev  # noqa: F401
 
 DD = pathlib.Path("/home/claudeuser/econ/quant-research-lab/dashboard_data"); ANN = 242
 L = lambda n: pd.read_parquet(DD / f"pullback_{n}.parquet")
@@ -100,6 +100,48 @@ def size_neutral(score):
 def grid(space):
     keys = list(space);
     return [dict(zip(keys, v)) for v in itertools.product(*[space[k] for k in keys])]
+
+
+# ---------- 供看板交互调参调用 ----------
+_STYLE = None
+TEST_START = pd.Timestamp("2024-07-01")
+
+
+def get_style():
+    global _STYLE
+    if _STYLE is None:
+        _STYLE = barra.build_style_factors(rfwd, market=MKT, logmv=logmv, ep=ep,
+                                           mom=mom(60), vol=vol(20), growth=pft)
+    return _STYLE
+
+
+def eval_config(name, P):
+    """给定策略名 + 一组参数 → 完整指标 + 收益序列 + Barra 暴露 + dev/Test 切分。"""
+    sel_fn, score_fn, space = STRATS[name]
+    sc = size_neutral(comp) if name.startswith("S5") else score_fn(P)
+    p, nh = run(sel_fn(P), sc, int(P["topn"]), int(P.get("rebal", 5)), P.get("vol_target"))
+    m = metr(p, nh)
+    m["barra"] = barra.barra_exposure(p, get_style())
+    devp, testp = p.reindex(idx[idx < TEST_START]).fillna(0), p.reindex(idx[idx >= TEST_START]).fillna(0)
+    m["dev_sharpe"] = float(devp.mean() / (devp.std() + 1e-12) * np.sqrt(ANN))
+    m["test_sharpe"] = float(testp.mean() / (testp.std() + 1e-12) * np.sqrt(ANN))
+    tnav = (1 + testp).cumprod(); m["test_cagr"] = float(tnav.iloc[-1] ** (ANN / len(testp)) - 1)
+    m["test_maxdd"] = float((tnav / tnav.cummax() - 1).min())
+    nav = (1 + p.fillna(0)).cumprod()
+    m["nav"] = nav; m["port"] = p.fillna(0)
+    return m
+
+
+def grid_sharpes(name):
+    """该策略全参数网格的夏普列表(看当前配置在分布里的位置)。"""
+    sel_fn, score_fn, space = STRATS[name]
+    out = []
+    for P in [c for c in grid(space) if c["topn"] >= 15]:
+        sc = size_neutral(comp) if name.startswith("S5") else score_fn(P)
+        p, nh = run(sel_fn(P), sc, int(P["topn"]), int(P.get("rebal", 5)), P.get("vol_target"))
+        if nh.mean() >= 15:
+            out.append({"P": P, "sharpe": metr(p, nh)["sharpe"]})
+    return out
 
 
 def main():

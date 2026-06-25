@@ -34,6 +34,41 @@ def load_signal():
     return pd.read_parquet(DD / "ml_signal.parquet")
 
 
+_EXEC = None
+from quantlab.data.tushare_adapter import _FUND_DIR as _FD
+
+
+def _exec():
+    """真实成交标志面板: (BUYABLE, SELLABLE, IS_ST)，对齐 idx×syms。数据缺失则退化为全可成交。"""
+    global _EXEC
+    if _EXEC is None:
+        ef, sf = _FD / "exec_flags.parquet", _FD / "st_periods.parquet"
+        if ef.exists():
+            E = pd.read_parquet(ef); E = E[E.symbol.isin(syms)]
+            E["trade_date"] = pd.to_datetime(E["trade_date"], format="%Y%m%d", errors="coerce") \
+                if E["trade_date"].dtype == object else pd.to_datetime(E["trade_date"])
+            buy = E.pivot_table(index="trade_date", columns="symbol", values="buyable", aggfunc="last") \
+                   .reindex(index=idx, columns=syms).fillna(False).astype(bool)
+            sell = E.pivot_table(index="trade_date", columns="symbol", values="sellable", aggfunc="last") \
+                    .reindex(index=idx, columns=syms).fillna(False).astype(bool)
+        else:                                            # 无数据:不约束(全可买卖),并提示
+            print("⚠️ 未找到 exec_flags.parquet,真实撮合退化为理想成交。先跑 examples/pull_execution_data.py", flush=True)
+            buy = pd.DataFrame(True, index=idx, columns=syms); sell = buy.copy()
+        st = pd.DataFrame(False, index=idx, columns=syms)
+        if sf.exists():
+            N = pd.read_parquet(sf)
+            for _, r in N.iterrows():
+                if r["symbol"] not in syms:
+                    continue
+                a = pd.to_datetime(str(r["start_date"]), errors="coerce")
+                b = pd.to_datetime(str(r["end_date"]), errors="coerce") if pd.notna(r["end_date"]) else idx[-1]
+                if pd.isna(a):
+                    continue
+                st.loc[(st.index >= a) & (st.index <= b), r["symbol"]] = True
+        _EXEC = (buy, sell, st)
+    return _EXEC
+
+
 SIG_H = 10              # IC 评估视野(10日);与持有期解耦——持有期是后处理
 HORIZONS = (5, 10, 20)  # 多视野集成:各视野各训一模型,预测平均(实验证明显著提升IC)
 
@@ -111,12 +146,21 @@ def train_signal(horizons=HORIZONS, train_step=2, purge=None):
     return pred_panel, meta
 
 
-def simulate(pred, hold=5, top_n=20, gap_thr=0.05, stop_loss=0.08, use_fund=True, cost=0.0015):
-    """后处理执行规则：Top-N、持有hold日、次日开盘买入、跳开>gap_thr不买、跌破entry*(1-stop)止损。"""
+def simulate(pred, hold=5, top_n=20, gap_thr=0.05, stop_loss=0.08, use_fund=True, cost=0.0015,
+             realistic=True, exclude_st=True):
+    """后处理执行规则：Top-N、持有hold日、次日开盘买入、跳开>gap_thr不买、跌破entry*(1-stop)止损。
+
+    realistic=True 时叠加 A 股真实撮合摩擦(需 examples/pull_execution_data.py 数据)：
+      · 涨停/停牌(当日开盘不可买) → 该票当日不买;
+      · 跌停/停牌(收盘不可卖) → 止损或到期当天卖不掉,**顺延到下一个可卖日按收盘价成交**
+        (顺延后往往更差,真实反映"暴跌时止损止不掉");
+    exclude_st=True 时把入场日处于 ST/*ST 区间的票剔出股票池。
+    """
     op, hi, lo, cl = _ohlc()
+    BUY, SELL, ST = _exec() if (realistic or exclude_st) else (None, None, None)
     pos = {d: i for i, d in enumerate(idx)}
     rb = [d for d in idx[::hold] if not pred.loc[d].isna().all()]
-    port = pd.Series(0.0, index=idx); trades = []
+    trades = []
     for d in rb:
         i = pos[d]
         if i + 1 >= len(idx):
@@ -125,14 +169,18 @@ def simulate(pred, hold=5, top_n=20, gap_thr=0.05, stop_loss=0.08, use_fund=True
         if use_fund:
             ok = (trend.loc[d].reindex(s.index).fillna(False)) & (q.loc[d].reindex(s.index).fillna(False))
             s = s[ok]
-        cand = list(s.nlargest(top_n * 2).index)        # 多取些,过滤跳开后凑够
+        cand = list(s.nlargest(top_n * 3).index)        # 多取些,过滤(跳开/涨停/ST)后凑够
         entry_i = i + 1                                  # 次日开盘
         picks = []
         for sym in cand:
             o0, pc = op.iloc[entry_i][sym], cl.iloc[i][sym]
             if pd.isna(o0) or pd.isna(pc) or pc <= 0:
                 continue
-            if o0 / pc - 1 > gap_thr:                    # 跳开过滤
+            if o0 / pc - 1 > gap_thr:                    # 跳开过滤(策略选择)
+                continue
+            if exclude_st and bool(ST.iloc[entry_i][sym]):           # ST 剔除
+                continue
+            if realistic and not bool(BUY.iloc[entry_i][sym]):       # 涨停/停牌不可买
                 continue
             picks.append(sym)
             if len(picks) >= top_n:
@@ -145,17 +193,22 @@ def simulate(pred, hold=5, top_n=20, gap_thr=0.05, stop_loss=0.08, use_fund=True
             if pd.isna(ent) or ent <= 0:
                 continue
             stop_px = ent * (1 - stop_loss)
-            exit_i, exit_px = end_i, cl.iloc[end_i][sym]
+            exit_i, exit_px, stopped = end_i, cl.iloc[end_i][sym], False
             for j in range(entry_i, end_i + 1):          # 逐日查止损(按最低)
                 if lo.iloc[j][sym] <= stop_px:
-                    exit_i, exit_px = j, stop_px
+                    exit_i, exit_px, stopped = j, stop_px, True
                     break
+            if realistic:                                # 真实:意向出场日卖不掉→顺延到下一可卖日按收盘价
+                j = exit_i
+                while j < len(idx) - 1 and not bool(SELL.iloc[j][sym]):
+                    j += 1
+                if j != exit_i:
+                    exit_i, exit_px, stopped = j, cl.iloc[j][sym], False
             if pd.isna(exit_px):
                 continue
             r = exit_px / ent - 1 - 2 * cost
             trades.append({"entry": idx[entry_i], "exit": idx[exit_i], "symbol": sym, "ret": r,
-                           "hold": exit_i - entry_i, "stopped": bool(exit_px == stop_px)})
-    # 用逐笔等权构日度组合(止损日后转现金)
+                           "hold": exit_i - entry_i, "stopped": bool(stopped)})
     return _daily_from_trades(trades, top_n, cost), pd.DataFrame(trades)
 
 
@@ -180,20 +233,34 @@ def metrics(port):
     return dict(cagr=cg, sharpe=sh, maxdd=dd, calmar=cg / abs(dd) if dd else 0, nav=nav)
 
 
+def compare_realism():
+    """同一信号下,理想撮合 vs 真实撮合(涨停不买/跌停停牌顺延/排除ST)的指标对比。"""
+    pred = load_signal()
+    print(f"{'配置':40s} {'年化':>6s} {'夏普':>6s} {'回撤':>7s} {'Calmar':>7s} {'笔数':>6s} {'止损率':>6s}", flush=True)
+    for hold in (5, 10):
+        for tag, kw in [("理想撮合", dict(realistic=False, exclude_st=False)),
+                        ("真实撮合(涨停/跌停/停牌)", dict(realistic=True, exclude_st=False)),
+                        ("真实撮合+排除ST", dict(realistic=True, exclude_st=True))]:
+            port, tr = simulate(pred, hold=hold, **kw)
+            m = metrics(port)
+            print(f"持有{hold}日 {tag:30s} {m['cagr']*100:>+5.0f}% {m['sharpe']:>6.2f} {m['maxdd']*100:>+6.0f}% "
+                  f"{m['calmar']:>7.2f} {len(tr):>6d} {tr['stopped'].mean()*100 if len(tr) else 0:>5.0f}%", flush=True)
+
+
 def main():
     print("训练纯信号模型(标签=未来5/10/20日收益的横截面rank, 多视野集成, 月度扩张窗口+purge)...", flush=True)
     pred, meta = train_signal()
     pred.to_parquet(DD / "ml_signal.parquet")
     json.dump(meta, open(DD / "ml_signal_meta.json", "w"), ensure_ascii=False, default=float)
     print(f"信号: 训练样本{meta['n_train_samples']} | 均IC {meta['mean_ic']} | 出分日 {pred.notna().any(axis=1).sum()}")
-    print("\n后处理规则示例(同一信号,不同持有期):")
-    for hold in (3, 5, 10):
-        port, tr = simulate(pred, hold=hold)
-        m = metrics(port)
-        print(f"  持有{hold}日 Top20 跳开5% 止损8% 基本面: 年化{m['cagr']*100:+.0f}% 夏普{m['sharpe']:.2f} "
-              f"回撤{m['maxdd']*100:+.0f}% | 笔数{len(tr)} 止损率{tr['stopped'].mean()*100:.0f}%")
+    print("\n真实撮合 vs 理想撮合对比:")
+    compare_realism()
     print("预训练完成: ml_signal.parquet + ml_signal_meta.json")
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "compare":
+        compare_realism()                                # 仅对比,不重训
+    else:
+        main()

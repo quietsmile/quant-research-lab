@@ -339,9 +339,10 @@ def _ml_engine():
 
 
 @st.cache_data(show_spinner="模拟中…")
-def _ml_sim(hold, top_n, gap, stop, fund):
+def _ml_sim(hold, top_n, gap, stop, fund, realistic, exst):
     mt, sig = _ml_engine()
-    port, trades = mt.simulate(sig, hold=hold, top_n=top_n, gap_thr=gap, stop_loss=stop, use_fund=fund)
+    port, trades = mt.simulate(sig, hold=hold, top_n=top_n, gap_thr=gap, stop_loss=stop, use_fund=fund,
+                               realistic=realistic, exclude_st=exst)
     m = mt.metrics(port)
     return {"nav": m["nav"], "cagr": m["cagr"], "sharpe": m["sharpe"], "maxdd": m["maxdd"],
             "calmar": m["calmar"], "n": len(trades), "win": float((trades["ret"] > 0).mean()) if len(trades) else 0,
@@ -351,22 +352,28 @@ def _ml_sim(hold, top_n, gap, stop, fund):
 
 def page_ml_trade():
     st.title("🧪 ML 交易调参 · 纯信号 + 后处理规则(全可调)")
-    st.caption("**模型只学纯收益信号**(LightGBM 预测未来10日收益，逐年 walk-forward)；下面所有规则都是"
-               "**模型之后的后处理**，可自由调：持有期、选股数、跳开过滤、止损、基本面池。次日开盘买入、含成本。")
+    st.caption("**模型只学纯收益信号**(LightGBM 预测未来5/10/20日收益的横截面rank、多视野集成)；下面所有规则都是"
+               "**模型之后的后处理**，可自由调：持有期、选股数、跳开过滤、止损、基本面池、真实撮合。次日开盘买入、含成本。")
     hold = st.sidebar.select_slider("持有期(交易日)", [3, 5, 10, 20], value=5)
     top_n = st.sidebar.slider("选股数 Top-N", 10, 40, 20, 5)
     gap = st.sidebar.slider("跳开过滤(开盘相对昨收涨幅>此值则不买) %", 2, 12, 5) / 100
     stop = st.sidebar.slider("止损 %", 4, 20, 8) / 100
     fund = st.sidebar.checkbox("加基本面池(趋势&扣非ROE>0&利润增>0)", value=True)
+    realistic = st.sidebar.checkbox("真实撮合(涨停不买/跌停·停牌不卖顺延)", value=True)
+    exst = st.sidebar.checkbox("排除 ST/*ST", value=True)
     try:
-        r = _ml_sim(hold, top_n, gap, stop, fund)
+        r = _ml_sim(hold, top_n, gap, stop, fund, realistic, exst)
     except Exception as e:  # noqa: BLE001
         st.error(f"信号未就绪，请先运行 examples/ml_trade.py：{e}"); return
     c = st.columns(6)
     c[0].metric("年化", f"{r['cagr']*100:+.0f}%"); c[1].metric("夏普", f"{r['sharpe']:.2f}")
     c[2].metric("最大回撤", f"{r['maxdd']*100:+.0f}%"); c[3].metric("Calmar", f"{r['calmar']:.2f}")
     c[4].metric("交易笔数", f"{r['n']}"); c[5].metric("止损率", f"{r['stop']:.0%}")
-    st.caption(f"逐笔胜率 {r['win']:.0%} | 平均每笔收益 {r['avg']:+.2%} | 当前: 持有{hold}日/Top{top_n}/跳开{gap:.0%}/止损{stop:.0%}/基本面{'开' if fund else '关'}")
+    st.caption(f"逐笔胜率 {r['win']:.0%} | 平均每笔收益 {r['avg']:+.2%} | 当前: 持有{hold}日/Top{top_n}/跳开{gap:.0%}/止损{stop:.0%}/"
+               f"基本面{'开' if fund else '关'}/真实撮合{'开' if realistic else '关'}/排除ST{'开' if exst else '关'}")
+    if realistic:
+        st.caption("✅ 真实撮合已开：涨停/停牌当日不买；止损或到期当天若跌停/停牌则**卖不掉、顺延到下一个可卖日按收盘价**"
+                   "(真实反映暴跌时止损止不掉)。关掉则是理想成交(会高估止损保护)。")
     nav = r["nav"]
     bn = (1 + HS300_DAILY.reindex(nav.index).fillna(0)).cumprod() if HS300_DAILY is not None else None
     fig = go.Figure()

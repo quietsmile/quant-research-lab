@@ -1,0 +1,17 @@
+{
+ "page": "hotmoney",
+ "hot_win": 10,
+ "topK": 4,
+ "maw": 20,
+ "tol": 0.02,
+ "require_rising": true,
+ "mf_win": 4,
+ "mf_thr": 0.0,
+ "exit_mode": "不额外退出(持到调仓)",
+ "mf_exit_win": 3,
+ "use_q": false,
+ "min_mv_yi": 50,
+ "rebal": 1,
+ "cost": 0.001,
+ "bname": "等权全市场"
+}

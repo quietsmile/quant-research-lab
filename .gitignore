@@ -23,3 +23,6 @@ data_manifest.csv
 .DS_Store
 .idea/
 .vscode/
+
+# 数据面板(大文件，不入库)
+dashboard_data/*.parquet

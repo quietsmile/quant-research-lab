@@ -36,13 +36,56 @@ def _grid(name):
     return _engine().grid_sharpes(name)
 
 
+COMMON_DOC = """**所有策略的共同设定**
+- **股票池**：liq1500（按流动性筛的约 1500 只，含部分退市），回测 **2020 起**（主力资金数据起点）。
+- **趋势过滤 trend**：收盘 ≥ 20 日均线 且 20 日均线上行（`close≥MA20 & MA20>MA20.shift(5)`）。
+- **财报质量过滤 q**：扣非 ROE>0 **且** 单季归母净利同比>0 **且** 市值>5 亿（剔垃圾小盘妖股）。
+- **建仓**：每 `rebal` 个交易日，在满足条件的股票里按打分取 **Top-N 等权**，持有到下次调仓。
+- **成本**：双边 0.15% 换手成本；**强制分散**：持股 ≥15（<15 的配置不纳入，规避集中度运气）。
+- **选参判据**：按"最差子区间夏普"挑稳健最优，而非最高年化。
+"""
+
+STRATEGY_DOCS = {
+ "等权基准": """**等权全市场（基准，最难超越的对照）**
+- **构造**：liq1500 池每日截面**等权平均收益**（= 每日再平衡到等权）。
+- **为何强**：① 等权 = **小盘最大暴露**——2024下半年–2026 A股小/微盘普涨，等权吃满（池内最小市值300只 Test CAGR+51%/夏普1.47；沪深300只有+20%/1.06）；② **每日再平衡红利**(波动市里"低买高卖")；③ **未扣成本、股票池仅2.3%退市(轻幸存者偏差)**——基准本身偏理想化。
+- **Test(2024-07~2026)**：CAGR **+40%**、夏普 **1.42**。**含义**：这条线很大程度是"小盘beta+理想化"，主动策略降了小盘暴露所以反而落后；更公平的可投基准是沪深300(夏普1.06)。
+""",
+ "S1 质量+动量": """**选股**：趋势 & 质量。**打分**：过去 `mom_win` 日涨幅（追动量，高分=近期强势）。
+**参数**：topn(持股数)、rebal(调仓周期)、mom_win(动量窗口 20/40/60)。
+**Barra 结论**：R² **64%**、α 年化 **−9.9%(不显著)** → 超额几乎全是**动量/高波风格 beta**，没有独立 alpha。A股纯动量本就弱。""",
+ "S2 质量+价值EP": """**选股**：趋势 & 质量。**打分**：EP = 盈利收益率(E/P，越高越便宜)，选低估值。
+**参数**：topn、rebal。
+**Barra 结论**：VALUE 暴露 **+0.86**(强价值)、α 年化 **+12.1%**、R² 19%。**冻结 Test 夏普 0.83、DSR 71%** —— 三个候选里**衰减最小、最稳**，但仍未达标(DSR<90%、跑输等权)。""",
+ "S3 质量+低波": """**选股**：趋势 & 质量。**打分**：−过去 `vol_win` 日日收益标准差(选**低波动**)。
+**参数**：topn、rebal、vol_win(20/40)。
+**Barra 结论**：R² 仅 **6%**(风格几乎解释不了它)、全样本 α **+15.2%(t2.2)** → 最像独立 alpha。**但冻结 Test 夏普从 dev 1.30 暴跌到 0.50、DSR 53%** —— 样本外衰减最严重，未确认。""",
+ "S4 板块轮动+质量+复合": """**选股**：(板块20日动量 Top-`hot_k` **∪** 板块主力资金流20日 Top-`hot_k`) & 趋势 & 质量 —— 只在"热门板块"里选。
+**打分**：复合 = 主力资金流排名 + 利润同比排名 + (close/MA20)排名。**参数**：hot_k、topn、rebal。
+**Barra 结论**：R² 43%、α +4.3%(不显著)。**板块主力资金流只在 2020-2022 有效、2023 后失效**，超额主要是风格 beta。""",
+ "S5 规模中性+质量+复合": """**选股**：趋势 & 质量。**打分**：复合打分**对 log 市值做截面回归取残差**(规模中性)，试图剔除小盘暴露。
+**参数**：topn、rebal。
+**Barra 结论**：α 不显著、**SIZE 仍 +0.34** —— 只中性化了打分，但选股池(趋势&质量)本身偏小盘，没真正中性，超额仍是小盘 beta。""",
+ "S6 多因子融合": """**选股**：趋势 & 质量。**打分**：五因子排名和 = 动量(40d)+EP+低波(−20d vol)+主力资金流+利润同比。
+**参数**：topn、rebal。
+**Barra 结论**：α 年化 **+11.5%**、R² 18%、VALUE+0.69。**冻结 Test 夏普 0.75、DSR 67%** —— 次于 S2，仍未达标。""",
+}
+
+
 def page_tune():
     st.title("🎛️ 策略调参 · 自由调整参数看指标分布")
-    st.caption("选 S2/S3/S6，拖动参数实时回测：完整指标 + dev/冻结Test + Barra 暴露 + 净值，"
+    st.caption("选任一策略，拖动参数实时回测：完整指标 + dev/冻结Test + Barra 暴露 + 净值，"
                "并显示当前配置在**全参数网格夏普分布**中的位置。回测 2020–2026、含成本、强制分散。")
     sf = _engine()
-    cand = {"S2 质量+价值EP": "S2 质量+价值EP", "S3 质量+低波": "S3 质量+低波", "S6 多因子融合": "S6 多因子融合"}
-    name = st.sidebar.selectbox("策略", list(cand))
+    name = st.sidebar.selectbox("策略", list(sf.STRATS))
+    # 详细解释
+    with st.expander("📖 策略详解（点开看全部细节）", expanded=True):
+        st.markdown("### " + name)
+        st.markdown(STRATEGY_DOCS.get(name, ""))
+        st.markdown("---")
+        st.markdown(STRATEGY_DOCS["等权基准"])
+        st.markdown("---")
+        st.markdown(COMMON_DOC)
     space = sf.STRATS[name][2]
     P = {}
     for k, opts in space.items():
@@ -65,8 +108,8 @@ def page_tune():
     fig.add_trace(go.Scatter(x=nav.index, y=nav.values, name="策略净值", line=dict(color="crimson", width=2)))
     bn = (1 + sf.MKT.reindex(nav.index).fillna(0)).cumprod()
     fig.add_trace(go.Scatter(x=bn.index, y=bn.values, name="等权大盘", line=dict(color="gray", dash="dash")))
-    fig.add_vline(x=sf.TEST_START, line_dash="dot", annotation_text="冻结Test起")
-    fig.update_layout(title="净值 vs 等权(竖线右为冻结Test)", height=330, margin=dict(l=10, r=10, t=40, b=10), legend=dict(orientation="h"))
+    fig.add_vline(x=sf.TEST_START.strftime("%Y-%m-%d"), line_dash="dot", line_color="gray")
+    fig.update_layout(title="净值 vs 等权(灰虚线=冻结Test 2024-07 起)", height=330, margin=dict(l=10, r=10, t=40, b=10), legend=dict(orientation="h"))
     l.plotly_chart(fig, use_container_width=True)
 
     # Barra 暴露

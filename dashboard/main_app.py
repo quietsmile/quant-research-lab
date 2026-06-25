@@ -12,10 +12,16 @@ import streamlit as st
 from quantlab.data.tushare_adapter import _FUND_DIR
 import pathlib
 DD = pathlib.Path("/home/claudeuser/econ/quant-research-lab/dashboard_data")
+try:
+    _bench = pd.read_parquet(DD / "pullback_bench.parquet"); _bench.index = pd.to_datetime(_bench.index)
+    HS300_DAILY = _bench["沪深300"]
+except Exception:  # noqa: BLE001
+    HS300_DAILY = None
 
 st.set_page_config(page_title="Quant Research Lab", layout="wide")
-page = st.sidebar.radio("页面", ["🛡️ 大盘稳健族(低小盘)", "🤖 ML Alpha(LightGBM复现)",
-                                 "📊 策略族 & Barra 暴露", "🎛️ 策略调参", "📈 前瞻事件策略 · Test 操作"])
+page = st.sidebar.radio("页面", ["🛡️ 大盘稳健族(低小盘)", "🧪 ML交易调参", "📚 LightGBM详解",
+                                 "🤖 ML Alpha(LightGBM复现)", "📊 策略族 & Barra 暴露",
+                                 "🎛️ 策略调参", "📈 前瞻事件策略 · Test 操作"])
 
 
 @st.cache_resource(show_spinner="加载策略引擎…")
@@ -324,8 +330,94 @@ def page_ml():
     st.caption(f"逐年收益(融合)：{d.get('yearly', {})}。Top因子以短期反转/动量/波动/换手为主。")
 
 
+@st.cache_resource(show_spinner="加载 ML 交易引擎(首次约10秒)…")
+def _ml_engine():
+    from examples import ml_trade as mt
+    sig = mt.load_signal(); mt._ohlc()  # 预热 OHLC 缓存
+    return mt, sig
+
+
+@st.cache_data(show_spinner="模拟中…")
+def _ml_sim(hold, top_n, gap, stop, fund):
+    mt, sig = _ml_engine()
+    port, trades = mt.simulate(sig, hold=hold, top_n=top_n, gap_thr=gap, stop_loss=stop, use_fund=fund)
+    m = mt.metrics(port)
+    return {"nav": m["nav"], "cagr": m["cagr"], "sharpe": m["sharpe"], "maxdd": m["maxdd"],
+            "calmar": m["calmar"], "n": len(trades), "win": float((trades["ret"] > 0).mean()) if len(trades) else 0,
+            "stop": float(trades["stopped"].mean()) if len(trades) else 0,
+            "avg": float(trades["ret"].mean()) if len(trades) else 0}
+
+
+def page_ml_trade():
+    st.title("🧪 ML 交易调参 · 纯信号 + 后处理规则(全可调)")
+    st.caption("**模型只学纯收益信号**(LightGBM 预测未来10日收益，逐年 walk-forward)；下面所有规则都是"
+               "**模型之后的后处理**，可自由调：持有期、选股数、跳开过滤、止损、基本面池。次日开盘买入、含成本。")
+    hold = st.sidebar.select_slider("持有期(交易日)", [3, 5, 10, 20], value=5)
+    top_n = st.sidebar.slider("选股数 Top-N", 10, 40, 20, 5)
+    gap = st.sidebar.slider("跳开过滤(开盘相对昨收涨幅>此值则不买) %", 2, 12, 5) / 100
+    stop = st.sidebar.slider("止损 %", 4, 20, 8) / 100
+    fund = st.sidebar.checkbox("加基本面池(趋势&扣非ROE>0&利润增>0)", value=True)
+    try:
+        r = _ml_sim(hold, top_n, gap, stop, fund)
+    except Exception as e:  # noqa: BLE001
+        st.error(f"信号未就绪，请先运行 examples/ml_trade.py：{e}"); return
+    c = st.columns(6)
+    c[0].metric("年化", f"{r['cagr']*100:+.0f}%"); c[1].metric("夏普", f"{r['sharpe']:.2f}")
+    c[2].metric("最大回撤", f"{r['maxdd']*100:+.0f}%"); c[3].metric("Calmar", f"{r['calmar']:.2f}")
+    c[4].metric("交易笔数", f"{r['n']}"); c[5].metric("止损率", f"{r['stop']:.0%}")
+    st.caption(f"逐笔胜率 {r['win']:.0%} | 平均每笔收益 {r['avg']:+.2%} | 当前: 持有{hold}日/Top{top_n}/跳开{gap:.0%}/止损{stop:.0%}/基本面{'开' if fund else '关'}")
+    nav = r["nav"]
+    bn = (1 + HS300_DAILY.reindex(nav.index).fillna(0)).cumprod() if HS300_DAILY is not None else None
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=nav.index, y=nav.values, name="策略(净值)", line=dict(color="crimson", width=2)))
+    if bn is not None:
+        fig.add_trace(go.Scatter(x=bn.index, y=bn.values / bn.iloc[0], name="沪深300", line=dict(color="gray", dash="dash")))
+    fig.update_layout(title="净值(含成本)", height=360, margin=dict(l=10, r=10, t=40, b=10), legend=dict(orientation="h"))
+    st.plotly_chart(fig, use_container_width=True)
+    st.info("注：这是把 ML 信号交给可调后处理规则的结果——**训练与规则解耦**。短持有(3/5日)通常被成本/反转吃掉，"
+            "持有期拉长更稳；本族整体未超过 L5,主要是市场 beta(见 ML Alpha 页 Barra)。")
+
+
+def page_ml_pipeline():
+    st.title("📚 LightGBM 数据构造 / 训练 / 测试 全过程")
+    try:
+        meta = json.load(open(DD / "ml_signal_meta.json"))
+    except Exception as e:  # noqa: BLE001
+        st.error(f"元数据未就绪：{e}"); return
+    st.subheader("① 数据构造")
+    st.markdown(f"- **股票池**：liq1500（大中盘为主，含部分退市）。\n"
+                f"- **因子(X)**：{len(meta['feats'])} 个 Alpha158 式量价+基本面因子 → `{', '.join(meta['feats'])}`\n"
+                f"- **标签(y)**：{meta['label']}（截面，clip ±50%）。\n"
+                f"- **训练样本**：{meta['n_train_samples']:,} 行（每 {meta['train_step']} 个交易日采样一次截面，降冗余）。\n"
+                f"- 缺失值用**训练集中位数**填充（不泄漏测试信息）。")
+    st.subheader("② 训练（逐年 walk-forward，严格防前视）")
+    folds = pd.DataFrame(meta["folds"])
+    st.markdown("每预测一年，只用**该年以前**的所有截面训练 LightGBM(200树/叶31/lr0.03/行列采样)，逐年滚动：")
+    st.dataframe(folds.rename(columns={"year": "预测年", "train_rows": "训练样本", "test_days": "预测交易日数"}), use_container_width=True)
+    st.subheader("③ 测试（样本外预测质量）")
+    ic = pd.DataFrame(meta["ic"]);
+    if len(ic):
+        ic["date"] = pd.to_datetime(ic["date"])
+        st.markdown(f"- **样本外 IC 均值 = {meta['mean_ic']}**（截面预测分 vs 实际未来收益的 Spearman 相关；>0.03~0.05 算有信息）。")
+        figic = go.Figure(); figic.add_trace(go.Scatter(x=ic["date"], y=ic["ic"].rolling(20).mean(), name="IC(20日均)"))
+        figic.add_hline(y=0, line_color="gray"); figic.add_hline(y=meta["mean_ic"], line_dash="dot", line_color="red")
+        figic.update_layout(title="样本外 IC(20日平滑)随时间", height=300, margin=dict(l=10, r=10, t=40, b=10))
+        st.plotly_chart(figic, use_container_width=True)
+    imp = meta.get("importance", {})
+    if imp:
+        s = pd.Series(imp).sort_values().tail(15)
+        figi = px.bar(x=s.values, y=s.index, orientation="h", title="LightGBM 因子重要性 Top15")
+        figi.update_layout(height=380, margin=dict(l=10, r=10, t=40, b=10))
+        st.plotly_chart(figi, use_container_width=True)
+    st.info("信号训练**纯粹预测收益**、不含任何交易规则；持有期/选股数/跳开/止损/基本面都在「🧪 ML交易调参」页作后处理。")
+
+
 if page.startswith("🛡️"):
     page_largecap()
+elif page.startswith("🧪"):
+    page_ml_trade()
+elif page.startswith("📚"):
+    page_ml_pipeline()
 elif page.startswith("🤖"):
     page_ml()
 elif page.startswith("📊"):

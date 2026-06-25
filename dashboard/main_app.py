@@ -304,7 +304,7 @@ def page_ml():
     c = st.columns(6)
     c[0].metric("融合 全期年化", f"{bl['cagr']*100:+.0f}%")
     c[1].metric("融合 夏普", f"{bl['sharpe']:.2f}")
-    c[2].metric("融合 回撤", f"{bl['maxdd']*100:+.0f}%")
+    c[2].metric("融合 回撤", f"{bl['max_drawdown']*100:+.0f}%")
     c[3].metric("融合 冻结Test夏普", f"{d['blend_test']['sharpe']:.2f}", f"{d['blend_test']['cagr']*100:+.0f}% CAGR")
     c[4].metric("纯ML 夏普", f"{ml['sharpe']:.2f}")
     c[5].metric("Barra α(t)", f"{d['alpha_ann']*100:+.0f}%", f"t={d['alpha_t']:.1f}")

@@ -88,21 +88,24 @@ def _exec():
 
 SIG_H = 10              # IC 评估视野(10日);与持有期解耦——持有期是后处理
 HORIZONS = (5, 10, 20)  # 多视野集成:各视野各训一模型,预测平均(实验证明显著提升IC)
+LOOKBACK_M = 24         # 训练用滚动窗(月);实验证明滚动24月 ICIR 0.576 > 扩张窗 0.531(+8.5%)
 
 
 def _xs_rank(panel):    # 当日横截面 rank → [0,1];作为训练标签(实验最大杠杆:学排序而非幅度)
     return panel.rank(axis=1, pct=True)
 
 
-def train_signal(horizons=HORIZONS, train_step=2, purge=None):
-    """训纯信号模型:**月度扩张窗口** walk-forward + purge,逐(隔)日出分。
+def train_signal(horizons=HORIZONS, train_step=2, purge=None, lookback_m=LOOKBACK_M):
+    """训纯信号模型:**月度滚动窗口** walk-forward + purge,逐(隔)日出分。
 
-    经 IC 实验(examples/ml_ic_experiments*.py)定下两条增益最大的技巧:
+    经 IC 实验(examples/ml_ic_experiments*.py / window_compare.py)定下三条增益:
       ① 训练标签用「未来收益的横截面 rank」(学排序、对离群/大盘整体涨跌更稳) —— 单项 IC +50%+;
-      ② 多视野集成:对 5/10/20 日收益各训一模型、预测取平均(跨视野去噪) —— 再 +6%。
-    严格 PIT:每月预测前用「该月之前的全部数据」重训;训练样本须在预测起点前 purge 个交易日
-    (默认=最长视野,确保所有视野的未来标签都已实现、不泄漏)。IC 仍以未来10日收益为基准。
+      ② 多视野集成:对 5/10/20 日收益各训一模型、预测取平均(跨视野去噪) —— 再 +6%;
+      ③ 训练用滚动 lookback_m 月窗(默认24)而非扩张窗 —— A股非平稳下近2年更跟得上风格,ICIR +8.5%。
+    严格 PIT:每月预测前用「该月之前、且近 lookback_m 月内」的数据重训;训练样本须在预测起点前
+    purge 个交易日(默认=最长视野,确保所有视野的未来标签都已实现、不泄漏)。IC 以未来10日收益为基准。
     训练只学收益排序,不含任何交易规则(跳开/止损/持有期/基本面)——这些都后处理。
+    lookback_m=None 退回扩张窗。
     """
     if purge is None:
         purge = max(horizons)
@@ -123,8 +126,8 @@ def train_signal(horizons=HORIZONS, train_step=2, purge=None):
     pred_panel = pd.DataFrame(np.nan, index=idx, columns=syms)
     meta = {"feats": feats, "label": f"未来{'/'.join(map(str,horizons))}日收益的横截面rank(多视野集成)",
             "n_train_samples": int(len(datas[SIG_H if SIG_H in datas else horizons[0]])),
-            "train_step": train_step, "purge": purge, "horizons": list(horizons),
-            "retrain": "月度扩张窗口(每月用该月以前全部数据重训)", "folds": [], "ic": []}
+            "train_step": train_step, "purge": purge, "horizons": list(horizons), "lookback_m": lookback_m,
+            "retrain": (f"月度滚动{lookback_m}月窗" if lookback_m else "月度扩张窗口"), "folds": [], "ic": []}
     imp_acc = np.zeros(len(feats))
     ipos = {d: i for i, d in enumerate(idx)}
     months = sorted({(d.year, d.month) for d in idx if d.year >= 2021})
@@ -136,10 +139,11 @@ def train_signal(horizons=HORIZONS, train_step=2, purge=None):
         if cut_i <= 0:
             continue
         cut_date = idx[cut_i]
+        lo_date = (cut_date - pd.DateOffset(months=lookback_m)) if lookback_m else pd.Timestamp("2000-01-01")
         models = []                                      # 多视野:每个视野训一模型
         last_rows = 0
         for h in horizons:
-            tr = datas[h][datas[h]["date"] <= cut_date]
+            tr = datas[h][(datas[h]["date"] <= cut_date) & (datas[h]["date"] > lo_date)]
             if len(tr) < 4000:
                 continue
             med = tr[feats].median()
@@ -281,7 +285,7 @@ def compare_realism():
 
 
 def main():
-    print("训练纯信号模型(标签=未来5/10/20日收益的横截面rank, 多视野集成, 月度扩张窗口+purge)...", flush=True)
+    print(f"训练纯信号模型(标签=未来5/10/20日收益的横截面rank, 多视野集成, 月度滚动{LOOKBACK_M}月窗+purge)...", flush=True)
     pred, meta = train_signal()
     pred.to_parquet(DD / "ml_signal.parquet")
     json.dump(meta, open(DD / "ml_signal_meta.json", "w"), ensure_ascii=False, default=float)

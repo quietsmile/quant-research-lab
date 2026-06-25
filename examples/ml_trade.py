@@ -11,11 +11,28 @@ import warnings; warnings.filterwarnings("ignore")
 import json, pathlib
 import numpy as np, pandas as pd, lightgbm as lgb
 from examples.ml_alpha import build_features          # 复用 Alpha158 式日频因子面板
-from examples.strategy_family import idx, ANN, trend, q, mv
+from examples.strategy_family import idx, ANN, trend, q, mv, sector
 from quantlab.data.tushare_adapter import load_daily_ohlcv
 
 DD = pathlib.Path("/home/claudeuser/econ/quant-research-lab/dashboard_data")
 syms = list(mv.columns)
+SECTOR = sector.reindex(syms)                         # 行业映射(symbol→industry),Layer3 行业集中度用
+
+
+_RISK = None
+
+
+def _risk():
+    """Layer3 风险门控面板: (AMT20 20日均成交额[元], VOL20 20日日收益std)。对齐 idx×syms。"""
+    global _RISK
+    if _RISK is None:
+        op, hi, lo, cl = _ohlc()
+        o = load_daily_ohlcv(); o = o[o.symbol.isin(syms)]
+        amt = o.pivot_table(index="trade_date", columns="symbol", values="amount").reindex(index=idx, columns=syms)
+        amt20 = (amt * 1000).rolling(20).mean()        # tushare amount 单位千元 → 元
+        vol20 = cl.pct_change(fill_method=None).rolling(20).std()
+        _RISK = (amt20, vol20)
+    return _RISK
 
 
 _OHLC = None
@@ -147,17 +164,22 @@ def train_signal(horizons=HORIZONS, train_step=2, purge=None):
 
 
 def simulate(pred, hold=5, top_n=20, gap_thr=0.05, stop_loss=0.08, use_fund=True, cost=0.0015,
-             realistic=True, exclude_st=True):
+             realistic=True, exclude_st=True, risk_gate=False, min_amount=5e7, max_vol=0.06, max_ind_frac=0.30):
     """后处理执行规则：Top-N、持有hold日、次日开盘买入、跳开>gap_thr不买、跌破entry*(1-stop)止损。
 
     realistic=True 时叠加 A 股真实撮合摩擦(需 examples/pull_execution_data.py 数据)：
       · 涨停/停牌(当日开盘不可买) → 该票当日不买;
-      · 跌停/停牌(收盘不可卖) → 止损或到期当天卖不掉,**顺延到下一个可卖日按收盘价成交**
-        (顺延后往往更差,真实反映"暴跌时止损止不掉");
+      · 跌停/停牌(收盘不可卖) → 止损或到期当天卖不掉,**顺延到下一个可卖日按收盘价成交**;
     exclude_st=True 时把入场日处于 ST/*ST 区间的票剔出股票池。
+    risk_gate=True 时叠加 Layer3 风险门控(可调)：
+      · min_amount: 20日均成交额下限(元,默认5000万)——流动性;
+      · max_vol: 20日日收益std上限(默认6%)——波动;
+      · max_ind_frac: 单行业最大占比(默认30%)——行业集中度。
     """
     op, hi, lo, cl = _ohlc()
     BUY, SELL, ST = _exec() if (realistic or exclude_st) else (None, None, None)
+    AMT, VOL = _risk() if risk_gate else (None, None)
+    ind_cap = max(1, int(np.ceil(top_n * max_ind_frac))) if risk_gate else top_n
     pos = {d: i for i, d in enumerate(idx)}
     rb = [d for d in idx[::hold] if not pred.loc[d].isna().all()]
     trades = []
@@ -169,9 +191,9 @@ def simulate(pred, hold=5, top_n=20, gap_thr=0.05, stop_loss=0.08, use_fund=True
         if use_fund:
             ok = (trend.loc[d].reindex(s.index).fillna(False)) & (q.loc[d].reindex(s.index).fillna(False))
             s = s[ok]
-        cand = list(s.nlargest(top_n * 3).index)        # 多取些,过滤(跳开/涨停/ST)后凑够
+        cand = list(s.nlargest(top_n * 4).index)        # 多取些,过滤(跳开/涨停/ST/风险门控)后凑够
         entry_i = i + 1                                  # 次日开盘
-        picks = []
+        picks = []; ind_cnt = {}
         for sym in cand:
             o0, pc = op.iloc[entry_i][sym], cl.iloc[i][sym]
             if pd.isna(o0) or pd.isna(pc) or pc <= 0:
@@ -182,6 +204,16 @@ def simulate(pred, hold=5, top_n=20, gap_thr=0.05, stop_loss=0.08, use_fund=True
                 continue
             if realistic and not bool(BUY.iloc[entry_i][sym]):       # 涨停/停牌不可买
                 continue
+            if risk_gate:                                            # Layer3 风险门控
+                a, v = AMT.iloc[i][sym], VOL.iloc[i][sym]            # 用 d 日(已知)的流动性/波动
+                if pd.isna(a) or a < min_amount:                     # 流动性下限
+                    continue
+                if pd.isna(v) or v > max_vol:                        # 波动上限
+                    continue
+                g = SECTOR.get(sym, "NA")
+                if ind_cnt.get(g, 0) >= ind_cap:                     # 行业集中度上限
+                    continue
+                ind_cnt[g] = ind_cnt.get(g, 0) + 1
             picks.append(sym)
             if len(picks) >= top_n:
                 break
@@ -240,7 +272,8 @@ def compare_realism():
     for hold in (5, 10):
         for tag, kw in [("理想撮合", dict(realistic=False, exclude_st=False)),
                         ("真实撮合(涨停/跌停/停牌)", dict(realistic=True, exclude_st=False)),
-                        ("真实撮合+排除ST", dict(realistic=True, exclude_st=True))]:
+                        ("真实撮合+排除ST", dict(realistic=True, exclude_st=True)),
+                        ("真实+ST+Layer3风险门控", dict(realistic=True, exclude_st=True, risk_gate=True))]:
             port, tr = simulate(pred, hold=hold, **kw)
             m = metrics(port)
             print(f"持有{hold}日 {tag:30s} {m['cagr']*100:>+5.0f}% {m['sharpe']:>6.2f} {m['maxdd']*100:>+6.0f}% "

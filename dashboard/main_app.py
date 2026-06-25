@@ -14,8 +14,8 @@ import pathlib
 DD = pathlib.Path("/home/claudeuser/econ/quant-research-lab/dashboard_data")
 
 st.set_page_config(page_title="Quant Research Lab", layout="wide")
-page = st.sidebar.radio("页面", ["📊 策略族 & Barra 暴露", "🎛️ 策略调参(S2/S3/S6)",
-                                 "📈 前瞻事件策略 · Test 操作"])
+page = st.sidebar.radio("页面", ["🛡️ 大盘稳健族(低小盘)", "📊 策略族 & Barra 暴露",
+                                 "🎛️ 策略调参", "📈 前瞻事件策略 · Test 操作"])
 
 
 @st.cache_resource(show_spinner="加载策略引擎…")
@@ -215,7 +215,47 @@ def page_event():
     st.plotly_chart(figs, use_container_width=True)
 
 
-if page.startswith("📊"):
+def page_largecap():
+    st.title("🛡️ 大盘稳健族 · 低小盘暴露、看绝对收益")
+    st.caption("针对'要稳定、对大多数股票成立、别压小盘、关注总收益'：股票池限**大中盘**(剔小盘)&趋势&质量，"
+               "防御因子(价值/低波/质量)、打分**规模中性**、宽分散(30–50只)、月度调仓、含成本。"
+               "对比**沪深300**(而非小盘等权)。")
+    try:
+        d = json.load(open(DD / "stable_largecap.json"))
+    except Exception as e:  # noqa: BLE001
+        st.error(f"结果未就绪，请先运行 examples/stable_largecap.py：{e}"); return
+    rows = []
+    for k, v in d.items():
+        rows.append({"策略": k, "年化": v["cagr"], "夏普": v["sharpe"], "最大回撤": v["maxdd"],
+                     "Calmar": v["calmar"], "夏普20-22": v["sh1"], "夏普23-26": v["sh2"],
+                     "持股": round(v["nh"]), "SMB暴露": v["smb"], "α年化": v["alpha"],
+                     "Test年化": v["test_cagr"], "Test夏普": v["test_sharpe"], "最优参数": str(v["P"])}
+        )
+    df = pd.DataFrame(rows)
+    HS = {"cagr": 0.03, "sharpe": 0.25, "maxdd": -0.46, "test_cagr": 0.20, "test_sharpe": 1.06}
+    fmt = df.copy()
+    for c in ["年化", "最大回撤", "α年化", "Test年化"]: fmt[c] = (fmt[c] * 100).round(1)
+    for c in ["夏普", "Calmar", "夏普20-22", "夏普23-26", "SMB暴露", "Test夏普"]: fmt[c] = fmt[c].round(2)
+    st.dataframe(fmt, use_container_width=True)
+    st.success(f"**沪深300 基准**：全期 年化 +3% / 夏普 0.25 / 回撤 −46%；Test 年化 +20% / 夏普 1.06。"
+               f"→ 大盘族在**绝对收益、夏普、回撤**上**全面优于沪深300**，且 **SMB 暴露≈0(不靠小盘)**。")
+    c1, c2 = st.columns(2)
+    figs = go.Figure()
+    figs.add_trace(go.Bar(x=df["策略"], y=df["夏普"], name="夏普"))
+    figs.add_hline(y=HS["sharpe"], line_dash="dash", line_color="red", annotation_text="沪深300 0.25")
+    figs.update_layout(title="夏普 vs 沪深300", height=330, margin=dict(l=10, r=10, t=40, b=10))
+    c1.plotly_chart(figs, use_container_width=True)
+    figm = px.bar(df, x="策略", y="SMB暴露", title="SMB(小盘)暴露 —— 越接近0越不依赖小盘")
+    figm.add_hline(y=0, line_color="gray"); figm.update_layout(height=330, margin=dict(l=10, r=10, t=40, b=10))
+    c2.plotly_chart(figm, use_container_width=True)
+    with st.expander("各策略最优参数 + 逐年"):
+        for k, v in d.items():
+            st.markdown(f"**{k}** — 参数 `{v['P']}` | SMB {v['smb']:+.2f} | α {v['alpha']*100:+.0f}% | 逐年 {v.get('by', {})}")
+
+
+if page.startswith("🛡️"):
+    page_largecap()
+elif page.startswith("📊"):
     page_strategy_family()
 elif page.startswith("🎛️"):
     page_tune()

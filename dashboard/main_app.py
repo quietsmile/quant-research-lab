@@ -239,6 +239,23 @@ def page_largecap():
     st.dataframe(fmt, use_container_width=True)
     st.success(f"**沪深300 基准**：全期 年化 +3% / 夏普 0.25 / 回撤 −46%；Test 年化 +20% / 夏普 1.06。"
                f"→ 大盘族在**绝对收益、夏普、回撤**上**全面优于沪深300**，且 **SMB 暴露≈0(不靠小盘)**。")
+
+    # 净值曲线
+    try:
+        nav = pd.read_parquet(DD / "stable_largecap_nav.parquet")
+        fign = go.Figure()
+        for col in nav.columns:
+            is_bench = col == "沪深300"
+            fign.add_trace(go.Scatter(x=nav.index, y=nav[col], name=col,
+                                      line=dict(width=2.5 if not is_bench else 1.5,
+                                                dash="dash" if is_bench else "solid",
+                                                color="black" if is_bench else None)))
+        fign.update_layout(title="净值曲线(全期 2020–2026，含成本；黑虚线=沪深300)", height=380,
+                           margin=dict(l=10, r=10, t=40, b=10), legend=dict(orientation="h"))
+        st.plotly_chart(fign, use_container_width=True)
+    except Exception as e:  # noqa: BLE001
+        st.warning(f"净值曲线未就绪(运行 examples/stable_largecap_nav.py)：{e}")
+
     c1, c2 = st.columns(2)
     figs = go.Figure()
     figs.add_trace(go.Bar(x=df["策略"], y=df["夏普"], name="夏普"))
@@ -248,6 +265,21 @@ def page_largecap():
     figm = px.bar(df, x="策略", y="SMB暴露", title="SMB(小盘)暴露 —— 越接近0越不依赖小盘")
     figm.add_hline(y=0, line_color="gray"); figm.update_layout(height=330, margin=dict(l=10, r=10, t=40, b=10))
     c2.plotly_chart(figm, use_container_width=True)
+
+    # 完整 Barra 暴露热图 + α
+    st.subheader("Barra 风格暴露（各策略对各风格因子的 beta）")
+    exp_df = pd.DataFrame({k: v["barra"] for k, v in d.items()}).T
+    b1, b2 = st.columns([3, 2])
+    figh = px.imshow(exp_df, text_auto=".2f", color_continuous_scale="RdBu_r", aspect="auto",
+                     labels=dict(color="beta"), title="暴露热图(红=正/蓝=负)")
+    figh.update_layout(height=340, margin=dict(l=10, r=10, t=40, b=10))
+    b1.plotly_chart(figh, use_container_width=True)
+    figal = px.bar(df, x="策略", y="α年化", title="Barra 剔除风格后年化 α")
+    figal.add_hline(y=0, line_color="gray"); figal.update_layout(height=340, margin=dict(l=10, r=10, t=40, b=10), yaxis_tickformat=".0%" if df["α年化"].abs().max() < 2 else None)
+    b2.plotly_chart(figal, use_container_width=True)
+    st.caption("关键看 **SIZE(小) 一列接近 0**(不靠小盘)；VALUE/VOL(低波) 正暴露=偏价值/低波(防御风格)。"
+               "α 为剔除这些风格后的独立超额。")
+
     with st.expander("各策略最优参数 + 逐年"):
         for k, v in d.items():
             st.markdown(f"**{k}** — 参数 `{v['P']}` | SMB {v['smb']:+.2f} | α {v['alpha']*100:+.0f}% | 逐年 {v.get('by', {})}")

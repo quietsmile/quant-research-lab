@@ -54,22 +54,27 @@ def stack_monthly(F, label, close):
     return data, me
 
 
-def walk_forward_predict(data, feats):
-    """逐年 walk-forward：用某年之前所有月训练，预测该年。返回带 pred 的 OOS 子集。"""
-    data = data.copy(); data["year"] = data["date"].dt.year
-    out = []
-    for Y in range(2021, 2027):
-        tr = data[data["year"] < Y]; te = data[data["year"] == Y]
+def walk_forward_predict(data, feats, purge_days=35):
+    """月度扩张窗口 walk-forward：每个预测月末用「该月末之前(扣 purge,标签已实现)的全部月末样本」
+    重训，预测该月末。purge_days≈35 天>下月(~21交易日)标签视野,确保训练样本的未来收益已实现、不泄漏。
+    这样每个预测点都用满了它之前的全部数据(含近期),而非冻结在去年底。返回带 pred 的 OOS 子集。"""
+    out = []; model = None
+    for d in sorted(pd.to_datetime(data["date"]).unique()):
+        d = pd.Timestamp(d)
+        if d < pd.Timestamp("2021-01-01"):
+            continue
+        tr = data[data["date"] <= d - pd.Timedelta(days=purge_days)]
+        te = data[data["date"] == d]
         if len(tr) < 5000 or len(te) == 0:
             continue
-        Xtr = tr[feats].fillna(tr[feats].median()); Xte = te[feats].fillna(tr[feats].median())
+        med = tr[feats].median()
         m = lgb.LGBMRegressor(n_estimators=200, num_leaves=31, learning_rate=0.03,
                               subsample=0.8, colsample_bytree=0.7, min_child_samples=100,
                               n_jobs=4, verbosity=-1)
-        m.fit(Xtr, tr["y"])
-        te = te.copy(); te["pred"] = m.predict(Xte)
-        out.append(te)
-    return pd.concat(out), m
+        m.fit(tr[feats].fillna(med), tr["y"])
+        te = te.copy(); te["pred"] = m.predict(te[feats].fillna(med))
+        out.append(te); model = m
+    return pd.concat(out), model
 
 
 def main():

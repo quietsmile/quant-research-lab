@@ -294,7 +294,8 @@ def page_largecap():
 def page_ml():
     st.title("🤖 ML Alpha · 复现 QuantMind(Alpha158式因子 + LightGBM)")
     st.caption("复现 github.com/qusong0627/quantmind 核心：~25 个 Alpha158 式量价因子 + LightGBM 预测下月收益，"
-               "**严格逐年 walk-forward**(只用当年以前训练)，大盘&质量内 Top-50 等权、月度、含成本。")
+               "**月度扩张窗口 walk-forward + purge**(每月用该月以前全部数据重训、近期也用上,标签做purge防泄漏)，"
+               "大盘&质量内 Top-50 等权、月度、含成本。")
     try:
         d = json.load(open(DD / "ml_alpha.json"))
         nav = pd.read_parquet(DD / "ml_alpha_nav.parquet")
